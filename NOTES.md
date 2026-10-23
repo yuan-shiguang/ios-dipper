@@ -131,15 +131,17 @@ image from a broken one.
 only) with `SHIM_GIC=0`, `SHIM_UFS=0`, `SHIM_UART=0` - the dipper default. That
 reaches the full console and holds.
 
-**CPU_ON is what kills the phone (measured 2026-10-23 19:30).** With the
-corrected `MPIDR(i) = i << 8` table and GIC off, `shim-smp2-dipper.img` never
-comes back from fastboot. With the *wrong* old table it did survive (three
-cores came up), so it is not "PSCI CPU_ON" in general: it is asking for
-0x100..0x700 specifically. Two candidates, neither tested yet: the TZ may
-reject/abort on those affinity values, or starting all seven cores - including
-the four A75s, which are a separate rail - browns the device out. Next step is
-to start cpu1 only, then cpu2, and see where it breaks, rather than all seven
-at once.
+**RETRACTED (2026-10-23 19:36): "CPU_ON is what kills the phone".** That
+conclusion came from a flash that never actually rebooted the device - the
+command was `fastboot flash boot x.img | fastboot reboot`, and a pipe is not a
+sequencing operator. Both processes start at once, the reboot wins the race,
+the phone comes back to fastboot, the flash re-runs and prints OKAY, and then
+nothing reboots it. `shim-smp2-dipper.img` was never given a chance. Use
+`shim/flash-boot.cmd`, or two separate commands.
+
+Everything measured *with a confirmed reboot* still stands: the framebuffer
+base and pitch, the DTB handover, PSCI 1.1, the 19.2 MHz counter, and the fact
+that the wrong old MPIDR table started three cores without killing the phone.
 
 The `BUILD` line used to be printed before `con_clear()`, which resets the
 cursor to row 0, so it was wiped before it could be read - that is why the
