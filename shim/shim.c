@@ -44,6 +44,16 @@
 #ifndef SHIM_UART
 #define SHIM_UART	1
 #endif
+/*
+ * SMP: 0 = do not touch PSCI at all, 1 = AFFINITY_INFO only (read-only, tells
+ * us whether the MPIDR table is right without starting anything), 2 = full
+ * CPU_ON round trip. Step 1 exists because the two images that changed the
+ * MPIDR table never reached the console, and nothing about that table can be
+ * learned from a phone that resets.
+ */
+#ifndef SHIM_SMP
+#define SHIM_SMP	2
+#endif
 
 #define IMEM_RESTART_REASON	BOARD_IMEM_RESTART_REASON
 #define PSHOLD			BOARD_PSHOLD
@@ -276,6 +286,7 @@ static void test_smp(void)
 	}
 	con_hex2("AFF", "off=", aff_off, "bad=", aff_bad);
 
+#if SHIM_SMP >= 2
 	for (int i = 1; i < NR_CPUS; i++)
 		ret[i] = smc(PSCI_CPU_ON, BOARD_CPU_ON_MPIDR(i),
 			     (uintptr_t)secondary_entry, i);
@@ -289,6 +300,10 @@ static void test_smp(void)
 			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
 				 (uint32_t)sec_mpidr[i] | (sec_mpidr[i] ? 0 : 0xdead0000));
 	}
+#else
+	(void)ret;
+	con_str("SMP", "no CPU_ON in this build");
+#endif
 }
 
 /* ---- GIC + timer ---- */

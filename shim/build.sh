@@ -48,6 +48,7 @@ dipper)
 	SHIM_UFS="${SHIM_UFS:-0}"
 	SHIM_GIC="${SHIM_GIC:-0}"
 	SHIM_UART="${SHIM_UART:-0}"
+	SHIM_SMP="${SHIM_SMP:-1}"
 	;;
 sweet)
 	DTB="${DTB:-../dtb/boot_unpacked/dtb}"
@@ -64,6 +65,7 @@ CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align
 [ "${SHIM_UFS:-1}" = 1 ] || CFLAGS="$CFLAGS -DSHIM_UFS=0"
 [ "${SHIM_GIC:-1}" = 1 ] || CFLAGS="$CFLAGS -DSHIM_GIC=0"
 [ "${SHIM_UART:-1}" = 1 ] || CFLAGS="$CFLAGS -DSHIM_UART=0"
+CFLAGS="$CFLAGS -DSHIM_SMP=${SHIM_SMP:-2}"
 [ -n "${SHIM_EXTRA_CFLAGS:-}" ] && CFLAGS="$CFLAGS $SHIM_EXTRA_CFLAGS"
 
 echo "board: $BOARD  header: v$HEADER_VERSION  dtb: ${DTBS:-$DTB}"
