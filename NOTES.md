@@ -79,7 +79,8 @@ screen - a few thousand stores, the cheapest possible proof that C runs.
 `SHIM_SLOW_PAINT` and `SHIM_PITCH_PROBE` re-enable the old fill/delay and the
 four-colour pitch probe for a future board that has to rediscover its pitch.
 
-**Built artefacts (WSL, `BOARD=dipper`):**
+**Built artefacts (WSL, `BOARD=dipper`)** - superseded by the list at the end
+of this section; kept because it records what the *first* bootable images were:
 `shim/out/shim-boot-dipper.img` (30 375 936 B, all probes) and
 `shim/out/shim-boot-dipper-min.img` (30 371 840 B, `SHIM_UFS=0 SHIM_GIC=0`).
 Both pass `check_bootimg.py` with 65 trees and all 11 dipper board-ids.
@@ -164,12 +165,55 @@ The `BUILD` line used to be printed before `con_clear()`, which resets the
 cursor to row 0, so it was wiped before it could be read - that is why the
 first screenshots never showed a timestamp. It is now printed after the clear.
 
-**Still unknown (needs the phone):** whether all 8 cores now report in with
-`BOARD_CPU_ON_MPIDR(i) = i << 8`; the GICv3 base/redistributor layout on
-SDM845 (`0x17a00000`/`0x17a60000` per the DT, untested - `SHIM_GIC=1`); UFS on
-SDM845 (`0x1d84000`, untested, needs its GDSC and clocks on first). A silent
-black screen with no fastboot return means the code runs and only the UART
-(`0xa84000`, back cover off) can say anything.
+**SMP verified on hardware (2026-10-23 20:00).** With
+`BOARD_CPU_ON_MPIDR(i) = i << 8`, the default `SHIM_SMP=1` image brings up all
+seven secondary cores: `CPU1..CPU7` every one `ret=0` and
+`mpidr=81000000 + x*100` (context 1 -> `0x81000100`, ... context 7 ->
+`0x81000700`) - exactly the DT `reg` values, so PSCI `CPU_ON` (SMC64
+`0xc4000003`) is fully working and the only fatal call was `AFFINITY_INFO`.
+
+**Display notch fixed the same build.** The `BUILD` compile-time stamp appeared
+but sat clipped behind the camera cut-out of dipper's EA8074 panel. Measured:
+with the default 24 px inset row 0 ("SHIM alive", y 24..72) was readable but
+row 1 ("BUILD", y 72..120) was not - so the cut-out's bottom edge is somewhere
+in (72, 120]. New per-board constant `BOARD_CON_TOP = 120` (the FHD+ status-bar
+height, safely above every candidate in that range) moves the whole console
+below it; `console.c` now computes `y0 = CON_TOP + row * CH_H` instead of using
+the left margin for the vertical origin too. sweet is unaffected (default 24).
+The console uses ~20 rows of 48 px, so losing the top 120 px still leaves 44
+rows - no downside.
+
+**Built artefacts (WSL, `BOARD=dipper`), both pass `check_bootimg.py`:**
+
+- `shim/out/shim-boot-dipper.img` - default (`SHIM_SMP=1`, no AFFINITY_INFO,
+  no UART/UFS/GIC) + notch fix. This is the new known-good reference.
+- `shim/out/shim-gic-dipper.img` - same plus `SHIM_GIC=1`, the **first ever
+  GICv3 probe on this phone**. It enables `GICD.CTLR` (writes `0x13`, waits for
+  RWP), finds the redistributor by matching `GICR_TYPER.Affinity` against
+  `MPIDR_EL1`, wakes it (`WAKER.ProcessorSleep` clear, waits for
+  `ChildrenAsleep` to drop), sets every SGI/PPI priority to `0xa0`, enables
+  INTIDs 19 (virtual timer), 18 (physical timer) and SGI 1, programs
+  `ICC_*` (EOImode 0, `PMR 0xf0`, `BPR1 0`, `IGRPEN1 1`) and then runs a 300 ms
+  window on the virtual timer and one on the SGI, printing pending/active/
+  `ISR_EL1`/`HPPIR1` and the IRQ counts.
+
+Flash it with two separate commands (never a pipe):
+
+```
+fastboot flash boot shim-gic-dipper.img
+fastboot reboot
+```
+
+`VTIMER irqs=N` with `N` roughly 30 (300 ms at the 10 ms period) and a non-zero
+`pend`/`act` bit 19 before the window closes is the pass condition. If the
+phone resets to fastboot, `SHIM_GIC=0` is the rollback and the fault is in the
+GICD/GICR programming, not in the timer - the timer counter was already proven
+counting at 19.2 MHz.
+
+**Still unknown (needs the phone):** UFS on SDM845 (`0x1d84000`, untested, needs
+its GDSC and clocks on first). A silent black screen with no fastboot return
+means the code runs and only the UART (`0xa84000`, back cover off) can say
+anything.
 
 ## Agent handoff / active work (2026-10-15, latest)
 

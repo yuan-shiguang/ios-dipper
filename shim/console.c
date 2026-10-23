@@ -157,7 +157,7 @@ static void put_char(int col, char ch, uint32_t fg)
 	if (ch < 0x20 || ch > 0x7e)
 		ch = '?';
 	const unsigned char *g = font8x16[ch - 0x20];
-	int x0 = MARGIN + col * CH_W, y0 = MARGIN + row * CH_H;
+	int x0 = MARGIN + col * CH_W, y0 = CON_TOP + row * CH_H;
 	if (x0 + CH_W > FB_W || y0 + CH_H > FB_H)
 		return;
 	for (int gy = 0; gy < 16; gy++)

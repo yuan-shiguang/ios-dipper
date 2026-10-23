@@ -11,6 +11,13 @@
 /* Debug UART mirror, 0 when the board has none wired up. */
 #define UART_BASE	BOARD_UART_BASE
 
+/*
+ * Vertical offset of the first text row, in pixels. Boards with a display
+ * notch push the console below it (see BOARD_CON_TOP in board.h); everything
+ * else uses the same value as the left margin.
+ */
+#define CON_TOP		BOARD_CON_TOP
+
 #define RED	0xffff0000U
 #define BLUE	0xff0000a0U
 #define WHITE	0xffffffffU
