@@ -1,5 +1,63 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## dipper (Xiaomi Mi 8, SDM845) - handoff 2026-10-23
+
+**Symptom being chased:** after `fastboot flash boot`, the phone shows a black
+screen and ends up in fastboot. Docs in the old tree are unreliable; the
+findings below come from the actual bytes of `shim/out/boot.img` (stock MIUI 12
+/ Android 10, 2020-12) and from `git log` of the deprecated tree.
+
+**Root cause (measured, not guessed):** the deprecated build appended **one**
+device tree to `Image.gz`. The stock kernel field is
+`gzip 14362216` + `30355119` bytes of **65 concatenated DTBs**, and ABL picks
+the entry whose `qcom,board-id` matches the phone. Tree #0 is board-id `0x2b`
+("Xiaomi Polaris P3") - not a dipper, whose ids are
+`0x1e/0x1f/0x24/0x25/0x26/0x32..0x37`. No match -> ABL never jumps -> fastboot,
+black screen. The rest of the old image was correct (v1, page 4096, kernel
+0x8000, ramdisk 0x1000000, tags 0x100, text_offset 0x80000).
+
+**Done this session (D:/ios-dipper, uncommitted at the time of writing):**
+
+- `shim/board.h` new: dipper + sweet blocks (FB `0x9d400000`/1080x2248/stride
+  4352, UART `0xa84000`, imem `0x146bf65c`, MPIDR `((i>>2)<<8)|(i&3)`, header
+  v1, `BOARD_HOLD_ON_EXIT`).
+- `shim/build.sh` rewritten: `BOARD=`, `DTBS=`, `HEADER_VERSION=`, `OUT=`,
+  `SHIM_UFS/SHIM_GIC`; dipper = v1 + `Image.gz-dtb` with the whole 65-tree
+  tail; runs `tools/check_bootimg.py` and fails the build on a bad layout.
+- `shim/start.S`: `text_offset 0x80000`; asm beacon (green bar / red column at
+  pitch 1088 / blue corner) before stack, `.bss` or C; no framebuffer reads.
+- `shim/shim.ld`: `.altentry` at image offset `0x80000` (`b _head`) so the image
+  works whether ABL jumps to the load address or to `load + text_offset`.
+- `shim/shim.c`: board constants everywhere, staged probes (panel -> DTB ->
+  PSCI -> loader -> SMP -> GIC -> UART -> UFS), **holds instead of resetting**
+  on dipper, panics hold too.
+- `shim/console.c`: `con_fill()` (pitch-independent whole-carve-out fill), UART
+  history replay, stride-safe text.
+- `tools/`: `check_bootimg.py` new; `extract_dtb.py` rewritten (whole-tail
+  extraction, `--list` with board-ids, correct FDT offset alignment);
+  `mkimage_gz_dtb.py`, `mkadt_dipper.py`, `mkfakekernel.py` copied in.
+- `dtb/dipper/dtbs.bin` (30 355 119 B) + `dtb/dipper/dtb`, both gitignored.
+
+**Built artefacts (WSL, `BOARD=dipper`):**
+`shim/out/shim-boot-dipper.img` (30 375 936 B, all probes) and
+`shim/out/shim-boot-dipper-min.img` (30 371 840 B, `SHIM_UFS=0 SHIM_GIC=0`).
+Both pass `check_bootimg.py` with 65 trees and all 11 dipper board-ids.
+**Not flashed yet** - next action is the minimal image: flash
+`shim/out/shim-boot-dipper-min.img`, reboot, read the panel (three marks, then
+the console, then `HOLD`). It never resets itself; power 10 s to get back to
+fastboot. Rollback is always `fastboot flash boot boot.img` with the stock
+image.
+
+**Build environment:** the shim must be built on Linux. This Windows checkout
+is reached from WSL at `/mnt/d/ios-dipper`, but compiling there is slow enough
+to look like a hang; `cp -r` the tree to `~/dbuild` and build there, then copy
+`shim/out/*.img` back. Windows checkouts get CRLF - `.gitattributes` pins LF.
+
+**Still unknown (needs the phone):** whether SDE keeps scanning the splash
+buffer at all; whether the pitch really is 4352; the MPIDR of the A75s; UFS on
+SDM845. A silent black screen with no fastboot return means the code runs and
+only the UART (`0xa84000`, back cover off) can say anything.
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<

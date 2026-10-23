@@ -11,9 +11,10 @@
  */
 #include <stdint.h>
 #include "console.h"
+#include "board.h"
 #include "ufs.h"
 
-#define UFS_BASE	0x01d84000UL	/* ufshc@1d84000, sweet live FDT */
+#define UFS_BASE	BOARD_UFS_BASE	/* ufshc@1d84000 on both sweet and dipper */
 
 #define REG_CAP		0x00
 #define REG_VER		0x08
@@ -120,7 +121,7 @@ static uint32_t scsi(uint8_t lun, const uint8_t *cdb, unsigned cdb_len, void *bu
 	ufs_wr(REG_UTRLDBR, 1);
 	uint64_t start = ticks();
 	while (ufs_rd(REG_UTRLDBR) & 1) {
-		if (ticks() - start > 19200000) {	/* 1 s */
+		if (ticks() - start > BOARD_TIMEBASE_HZ) {	/* 1 s */
 			ufs_wr(REG_UTRLCLR, ~1u);	/* clear slot 0 (write 0 to the bit) */
 			return 1;			/* timeout */
 		}

@@ -1,0 +1,20 @@
+# The shim is built on Linux (WSL or the build box): a CRLF shell script or
+# linker script is a "bad interpreter" waiting to happen, and a CRLF .S file
+# confuses the assembler's macro lines. Store text as LF, always.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.S text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.ld text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+
+# Device dumps and build output are binary, never normalise them.
+*.img binary
+*.simg binary
+*.bin binary
+*.adt binary
+*.gz binary
+dtb/** binary
