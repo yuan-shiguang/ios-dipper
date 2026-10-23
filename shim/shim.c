@@ -467,6 +467,17 @@ static void pitch_probe(void)
 
 void shim_main(uint64_t dtb)
 {
+#ifdef SHIM_BEACON_ONLY
+	/*
+	 * -DSHIM_BEACON_ONLY: the asm beacon in start.S has already painted, and
+	 * that is the whole test. This build answers exactly one question - did
+	 * ABL jump into us at all - and nothing else can hide the answer.
+	 */
+	(void)dtb;
+	for (;;)
+		__asm__ volatile("wfe");
+#endif
+
 	/*
 	 * 1. Panel. start.S already put a green bar, a red column and a blue
 	 *    corner on it. Repaint the whole carve-out in a bright colour first:
