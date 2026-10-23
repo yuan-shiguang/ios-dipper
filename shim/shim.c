@@ -667,19 +667,25 @@ static void __attribute__((unused)) test_gic(void)
 		 (rd32(GICD_BASE) >> 31) & 1);
 
 	/*
-	 * 10. Optional: actually take the interrupt. Off by default because our
-	 *     vectors have no IRQ handler yet, so the first delivery lands in the
-	 *     panic screen. Turn it on once the GIC itself is proven and the
-	 *     handler is in place.
+	 * 10. Optional: actually take the interrupt. Off by default.
+	 *
+	 *     irq_window() does the whole job: it programs CNTV_TVAL_EL0 for a
+	 *     10 ms period, clears IMASK, samples pending/active/ISR/HPPI with
+	 *     IRQs still masked, then does `msr daifclr, #2` and lets ~300 ms of
+	 *     real interrupts through before re-masking. slot 5 of the vector
+	 *     table already routes to irq_handler(), which reads ICC_IAR1_EL1,
+	 *     filters the 1020-1023 spurious range, re-arms the timer and writes
+	 *     ICC_EOIR1_EL1 - so a non-zero `irqs=` count is a delivered,
+	 *     acknowledged, handled interrupt, not just a pending one.
+	 *
+	 *     The SGI leg is deliberately gone: sgi_self() builds an
+	 *     ICC_SGI1R_EL1 value with Aff2 in Aff3's field and no Aff3 at all,
+	 *     so on this part it would address an affinity that matches no core
+	 *     and report a misleading zero.
 	 */
 #if SHIM_GIC_IRQ
 	stage = "gic vtimer";
-	wsr("cntv_cval_el0", rsr("cntvct_el0") + rsr("cntfrq_el0") / 10);
-	wsr("cntv_ctl_el0", rsr("cntv_ctl_el0") & ~2ULL);	/* unmask */
-	isb();
 	irq_window("VTIMER", r, VTIMER_INTID);
-	wsr("cntv_ctl_el0", rsr("cntv_ctl_el0") | 2);		/* mask again */
-	isb();
 #else
 	con_str("GIC", "irq test off");
 #endif

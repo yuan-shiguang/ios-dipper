@@ -267,6 +267,35 @@ its GDSC and clocks on first). A silent black screen with no fastboot return
 means the code runs and only the UART (`0xa84000`, back cover off) can say
 anything.
 
+**GICv3 PROVEN ON HARDWARE (2026-10-23 23:05).** The rewritten `test_gic()`
+reached the **grey** milestone bar, which is the last of the eleven - so every
+step completed: EL1 sysregs, GICD decode at `0x17a00000`, sysreg interface
+(`ICC_SRE_EL1.SRE`), affinity routing (`ARE_NS`), redistributor matched by
+affinity, redistributor awake, INTID 19 enabled, Group 1 signalled, and
+`GICD.CTLR` Group 1 on. The virtual timer's INTID is armed and the CPU
+interface is live. That is the whole GIC foundation the XNU port needs.
+
+What is *not* yet proven is **delivery**: the virtual timer is deliberately
+masked (`CNTV_CTL_EL0.IMASK`) while `ICC_IGRPEN1` is on, because taking an
+interrupt before the handler is exercised would land in the panic screen and
+be indistinguishable from a GIC fault. The handler is already wired and
+waiting - `start.S` has all 16 vector slots, slot 5 (IRQ from current EL, SPx)
+routes through `exc_common` to `exc_handler(5)`, which calls `irq_handler()`:
+read `ICC_IAR1_EL1`, drop the 1020-1023 spurious range, re-arm
+`CNTV_TVAL_EL0` for a 10 ms period, write `ICC_EOIR1_EL1`.
+
+**Next image: `shim/out/shim-gicirq-dipper.img`** (md5
+`709582148349227b2ba7a7ac36ea9c20`, FLG `0x00`, 30 375 936 bytes) is the same
+probe with `SHIM_GIC_IRQ=1`, which lets `irq_window()` run the virtual timer
+for ~300 ms with IRQs unmasked and report `irqs=` / `other=` / `pend=` /
+`act=` / `isr=` / `hppi=` / `tctl=` / `last=`. A non-zero `irqs=` is a
+delivered, acknowledged and handled interrupt - the last piece.
+
+The SGI leg of `irq_window()` is left unused on purpose: `sgi_self()` builds
+its `ICC_SGI1R_EL1` value with Aff2 in Aff3's field and no Aff3 at all, so on
+this part it would address an affinity that matches no core and report a
+misleading zero. Fix it before using it for anything.
+
 **ROOT CAUSE of every "卡fb" since 20:04 - it was never the GIC code
 (2026-10-23 23:00).** `tools/mkimage_gz_dtb.py` padded the gzip stream to a
 4-byte multiple by setting `FLG.FCOMMENT` and putting the pad bytes in the
