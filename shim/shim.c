@@ -45,14 +45,18 @@
 #define SHIM_UART	1
 #endif
 /*
- * SMP: 0 = do not touch PSCI at all, 1 = AFFINITY_INFO only (read-only, tells
- * us whether the MPIDR table is right without starting anything), 2 = full
- * CPU_ON round trip. Step 1 exists because the two images that changed the
- * MPIDR table never reached the console, and nothing about that table can be
- * learned from a phone that resets.
+ * SMP: 0 = do not touch PSCI at all, 1 = CPU_ON only, 2 = AFFINITY_INFO
+ * before the CPU_ON round trip.
+ *
+ * Level 1 is the dipper default because AFFINITY_INFO is fatal on this
+ * device: with SHIM_SMP=1 and the *old, accepted* MPIDR table the phone still
+ * reset, while SHIM_SMP=0 boots. So it is the call, not the affinity value -
+ * most likely the SMC64 function id 0xc4000004, which the TZ does not have in
+ * its table and answers with a reset instead of NOT_SUPPORTED. The 32-bit id
+ * 0x84000004 is the one to try if it is ever needed.
  */
 #ifndef SHIM_SMP
-#define SHIM_SMP	2
+#define SHIM_SMP	1
 #endif
 
 #define IMEM_RESTART_REASON	BOARD_IMEM_RESTART_REASON
@@ -259,7 +263,7 @@ static void test_smp(void)
 	stage = "smp";
 	int64_t ret[NR_CPUS];
 
-#if SHIM_SMP >= 1
+#if SHIM_SMP >= 2
 	uint64_t self = rsr("mpidr_el1") & 0xffffff;
 
 	/*
@@ -289,7 +293,7 @@ static void test_smp(void)
 	con_hex2("AFF", "off=", aff_off, "bad=", aff_bad);
 #endif
 
-#if SHIM_SMP >= 2
+#if SHIM_SMP >= 1
 	for (int i = 1; i < NR_CPUS; i++)
 		ret[i] = smc(PSCI_CPU_ON, BOARD_CPU_ON_MPIDR(i),
 			     (uintptr_t)secondary_entry, i);
@@ -303,9 +307,6 @@ static void test_smp(void)
 			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
 				 (uint32_t)sec_mpidr[i] | (sec_mpidr[i] ? 0 : 0xdead0000));
 	}
-#elif SHIM_SMP >= 1
-	(void)ret;
-	con_str("SMP", "no CPU_ON in this build");
 #else
 	(void)ret;
 	con_str("SMP", "no PSCI in this build");

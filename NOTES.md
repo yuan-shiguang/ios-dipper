@@ -131,13 +131,30 @@ image from a broken one.
 only) with `SHIM_GIC=0`, `SHIM_UFS=0`, `SHIM_UART=0` - the dipper default. That
 reaches the full console and holds.
 
-**RETRACTED (2026-10-23 19:36): "CPU_ON is what kills the phone".** That
-conclusion came from a flash that never actually rebooted the device - the
-command was `fastboot flash boot x.img | fastboot reboot`, and a pipe is not a
-sequencing operator. Both processes start at once, the reboot wins the race,
-the phone comes back to fastboot, the flash re-runs and prints OKAY, and then
-nothing reboots it. `shim-smp2-dipper.img` was never given a chance. Use
-`shim/flash-boot.cmd`, or two separate commands.
+**AFFINITY_INFO is fatal on this device (measured 2026-10-23 19:48).** Three
+images, one flash each:
+
+| build | PSCI calls | result |
+|---|---|---|
+| `SHIM_SMP=0` | none | boots, full console |
+| `SHIM_SMP=1` + **old** MPIDR table | `AFFINITY_INFO` only | resets to fastboot |
+| `SHIM_SMP=2` + new table | `AFFINITY_INFO` then `CPU_ON` | resets to fastboot |
+
+The old table is the one `CPU_ON` accepts, and the first and second images
+differ only by that one call, so it is the call itself and not the affinity
+value. Most likely the SMC64 function id `0xc4000004` is not in the TZ's PSCI
+table and an unknown id is answered with a reset rather than
+`NOT_SUPPORTED`; the 32-bit id `0x84000004` is the one to try if it is ever
+needed. `SHIM_SMP` now means 0 = no PSCI, 1 = `CPU_ON` only (dipper default),
+2 = `AFFINITY_INFO` + `CPU_ON`.
+
+**Also ruled out (2026-10-23):** the device is **not A/B** -
+`fastboot getvar current-slot` answers
+`FAILED (remote: 'GetVar Variable Not found')`. And the recurring "stuck at
+fastboot" reports were mostly a bad command:
+`fastboot flash boot x.img | fastboot reboot` runs both at once, the reboot
+wins the race, the flash re-runs and prints OKAY, and nothing reboots the
+phone afterwards. Use two lines or `shim/flash-boot.cmd`.
 
 Everything measured *with a confirmed reboot* still stands: the framebuffer
 base and pitch, the DTB handover, PSCI 1.1, the 19.2 MHz counter, and the fact
