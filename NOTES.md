@@ -119,11 +119,20 @@ for contexts 2/5/7, cpu4..cpu7 never came up, and three contexts returned -5
 (ON_PENDING). Fixed to `BOARD_CPU_ON_MPIDR(i) = i << 8`, the value the DT
 gives, same as sweet and same as Linux.
 
-**Still unknown (needs the phone):** whether all 8 cores now report in; the
-GICv3 base/redistributor layout on SDM845 (`0x17a00000`/`0x17a60000`, still
-untested - `SHIM_GIC=1`); UFS on SDM845 (`0x1d84000`, untested, needs its GDSC
-and clocks on first). A silent black screen with no fastboot return means the
-code runs and only the UART (`0xa84000`, back cover off) can say anything.
+**Watch out when reading this file:** three "back to fastboot" reports on
+2026-10-23 evening were not failures at all - the image had been flashed but
+the phone was never rebooted, so it was still sitting in the fastboot UI.
+`fastboot flash boot` does not start anything. Always `fastboot reboot`, and
+always read the `BUILD` line (compile timestamp, second console line) before
+believing anything else on the screen: it is the only way to tell a stale boot
+image from a broken one.
+
+**Still unknown (needs the phone):** whether all 8 cores now report in with
+`BOARD_CPU_ON_MPIDR(i) = i << 8`; the GICv3 base/redistributor layout on
+SDM845 (`0x17a00000`/`0x17a60000` per the DT, untested - `SHIM_GIC=1`); UFS on
+SDM845 (`0x1d84000`, untested, needs its GDSC and clocks on first). A silent
+black screen with no fastboot return means the code runs and only the UART
+(`0xa84000`, back cover off) can say anything.
 
 ## Agent handoff / active work (2026-10-15, latest)
 
