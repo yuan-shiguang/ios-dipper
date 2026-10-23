@@ -267,6 +267,37 @@ its GDSC and clocks on first). A silent black screen with no fastboot return
 means the code runs and only the UART (`0xa84000`, back cover off) can say
 anything.
 
+**Colour-bar milestone tracing (2026-10-23 21:53) - the GIC fault localizer.**
+`shim/out/shim-gictrace-dipper.img` (md5 `4ba3c6030d11b193676856a0b96c14c1`,
+BUILD stamp `Oct 23 2026 21:53:17`, kernel_size 30 364 551 = **7413 pages**,
+30 375 936 bytes total - byte-size identical to the known-good image, so size
+is not a variable). Built with
+`BOARD=dipper OUT=out-gic5 SHIM_GIC=1 SHIM_GIC_IRQ=0 SHIM_EXTRA_CFLAGS=-DSHIM_TRACE=1 ./build.sh`.
+
+`SHIM_TRACE=1` enables `mark_bar()`: a **full-width, 48-row colour bar at
+`y0 = FB_H - 200`** (screen bottom, below the console). Each dangerous action
+in the probe first paints its own colour, so the colour left on screen is the
+identity of the last action that completed. No text reading required.
+
+| colour | value | meaning |
+|---|---|---|
+| none | - | shim never ran: ABL refused the image (procedure problem) |
+| magenta | `ffff00ff` | `shim_main` reached, console cleared (C is alive) |
+| cyan | `ff00ffff` | reached `test_gic` |
+| green | `ff00ff00` | EL1 sysregs read (MPIDR/CNTFRQ/CNTPCT) |
+| yellow | `ffffff00` | GICD decodes at `0x17a00000` |
+| orange | `ffff8000` | sysreg interface (ICC_*_EL1) live |
+| red | `ffff0000` | GICD.CTLR written, RWP cleared |
+| white | `ffffffff` | redistributor matched by affinity |
+| purple | `ff8000ff` | redistributor awake (GICR_WAKER.Clear+ChildrenAsleep) |
+| spring green | `ff00ff80` | INTID 19/18/1 enabled in GICR |
+| pale yellow | `ffffff80` | Group 1 signalled |
+| grey | `ff808080` | probe finished, control returns |
+
+Read with `fastboot flash boot shim-gictrace-dipper.img && fastboot reboot`.
+`fastboot boot` is unusable on dipper (00000050 on every image, including the
+reference project's own `uefi.img`).
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<

@@ -44,6 +44,30 @@
 #ifndef SHIM_GIC_IRQ
 #define SHIM_GIC_IRQ	1
 #endif
+/*
+ * Colour-bar tracing for the GIC probe, off by default.
+ *
+ * The notch hides text, a dim AMOLED hides faint text, and "I looked and saw
+ * nothing" has already cost several cycles - so this does not ask anybody to
+ * read. One full-width 48 px bar is painted *before* each step that can stop
+ * the SoC, each in its own colour, so the last bar on screen names the step
+ * that hung and the first bar proves the image ran at all.
+ */
+#ifndef SHIM_GIC_TRACE
+#define SHIM_GIC_TRACE	0
+#endif
+/*
+ * Colour-bar milestone tracing, off by default.
+ *
+ * Text has failed us three times over: the notch hides the first rows, a dim
+ * AMOLED hides faint glyphs, and "I looked and saw nothing" cannot be
+ * distinguished from "nobody looked". A 48 px bar spanning the full panel
+ * width cannot be missed, and it is painted *before* the code it guards, so
+ * the colour left on screen names the last thing that ran.
+ */
+#ifndef SHIM_TRACE
+#define SHIM_TRACE	0
+#endif
 #ifndef SHIM_MMU
 #define SHIM_MMU	0	/* MMU tests are for the kernel port, not bring-up */
 #endif
@@ -114,6 +138,27 @@ static inline uint32_t rd32(uintptr_t a) { return *(volatile uint32_t *)a; }
 static inline uint64_t rd64(uintptr_t a) { return *(volatile uint64_t *)a; }
 static inline void wr32(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
 static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
+
+#if SHIM_TRACE
+/*
+ * One full-width bar, 48 px tall, near the bottom of the panel - above the
+ * rounded corner that already swallowed the asm beacon's blue square. Each
+ * milestone repaints it, so exactly one colour is ever on screen and it is
+ * the colour of the last milestone that started.
+ */
+static void mark_bar(uint32_t c)
+{
+	const int y0 = FB_H - 200;
+	for (int y = 0; y < 48; y++) {
+		volatile uint32_t *line = con_fb + (uint32_t)(y0 + y) * (FB_STRIDE / 4);
+		for (int x = 0; x < FB_W; x++)
+			line[x] = c;
+	}
+}
+#define MARK(c)	mark_bar(c)
+#else
+#define MARK(c)	do { } while (0)
+#endif
 
 extern char secondary_entry[];
 
@@ -418,6 +463,7 @@ static __attribute__((unused)) void irq_window(const char *label, uintptr_t r, i
  */
 static void __attribute__((unused)) test_gic(void)
 {
+	MARK(0xff00ffffU);		/* cyan: reached test_gic */
 	con_str("GIC", "entry");
 
 	con_hex2("EL", "cur=", (uint32_t)rsr("currentel"), "sctlr=",
@@ -427,10 +473,12 @@ static void __attribute__((unused)) test_gic(void)
 	uint64_t pfr0 = rsr("id_aa64pfr0_el1");
 	con_hex2("PFR", "pfr0=", (uint32_t)pfr0, "gic=",
 		 (uint32_t)(pfr0 >> 24) & 0xf);
+	MARK(0xff00ff00U);		/* green: EL1 sysregs read */
 
 	stage = "gic iidr";
 	con_hex2("GICD", "iidr=", rd32(GICD_BASE + 0x08), "typer=",
 		 rd32(GICD_BASE + 0x04));
+	MARK(0xffffff00U);		/* yellow: GICD decodes at 0x17a00000 */
 
 	stage = "gic sre";
 	uint64_t sre = rsr("icc_sre_el1");
@@ -444,6 +492,7 @@ static void __attribute__((unused)) test_gic(void)
 		con_str("GIC", "no sysreg iface, skip");
 		return;
 	}
+	MARK(0xffff8000U);		/* orange: sysreg interface live */
 
 	stage = "gic dist";
 	uint32_t dctlr = rd32(GICD_BASE);
@@ -451,6 +500,7 @@ static void __attribute__((unused)) test_gic(void)
 	wr32(GICD_BASE, dctlr | 0x13);
 	gicd_wait_rwp();
 	con_hex2("GICD", "was=", dctlr, "now=", rd32(GICD_BASE));
+	MARK(0xffff0000U);		/* red: GICD.CTLR written, RWP cleared */
 
 	stage = "gic redist";
 	uintptr_t r = find_gicr();
@@ -459,6 +509,7 @@ static void __attribute__((unused)) test_gic(void)
 		return;
 	}
 	con_str("GICR", "found");
+	MARK(0xffffffffU);		/* white: redistributor matched by affinity */
 	uint32_t waker = rd32(r + GICR_WAKER);
 	if (waker & 2) {
 		wr32(r + GICR_WAKER, waker & ~2U);
@@ -466,6 +517,7 @@ static void __attribute__((unused)) test_gic(void)
 			;
 	}
 	con_hex2("GICR", "base=", r, "waker=", rd32(r + GICR_WAKER));
+	MARK(0xff8000ffU);		/* purple: redistributor awake */
 
 	stage = "gic config";
 	uint32_t en_before = rd32(r + GICR_ISENABLER0);
@@ -474,6 +526,7 @@ static void __attribute__((unused)) test_gic(void)
 		wr8(r + GICR_IPRIORITYR + id, 0xa0);
 	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
 	con_hex2("ENABLE", "was=", en_before, "now=", rd32(r + GICR_ISENABLER0));
+	MARK(0xff00ff80U);		/* spring green: INTID 19/18/1 enabled */
 
 	stage = "gic icc";
 	uint64_t ctlr = rsr("icc_ctlr_el1");
@@ -483,6 +536,7 @@ static void __attribute__((unused)) test_gic(void)
 	wsr("icc_igrpen1_el1", 1);
 	isb();
 	con_hex2("ICC", "ctlr=", ctlr, "grpen1=", rsr("icc_igrpen1_el1"));
+	MARK(0xffffff80U);		/* pale yellow: Group 1 signalled */
 
 #if SHIM_GIC_IRQ
 	stage = "gic vtimer";
@@ -494,6 +548,7 @@ static void __attribute__((unused)) test_gic(void)
 #endif
 	wr32(r + GICR_ICENABLER0, 0xffffffff);
 	isb();
+	MARK(0xff808080U);		/* grey: probe finished */
 }
 
 /* ---- MMU / speed tests (kernel-port groundwork) ---- */
@@ -629,6 +684,7 @@ void shim_main(uint64_t dtb)
 #endif
 	stage = "fb console";
 	con_clear(BLACK);
+	MARK(0xffff00ffU);		/* magenta: C ran, console started */
 #ifdef SHIM_PITCH_PROBE
 	pitch_probe();
 #endif
