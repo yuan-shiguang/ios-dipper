@@ -75,6 +75,7 @@
 #define PSCI_FEATURES		0x8400000aUL
 #define PSCI_SYSTEM_SUSPEND	0xc400000eUL
 #define PSCI_SYSTEM_RESET2	0xc4000012UL
+#define PSCI_AFFINITY_INFO	0xc4000004UL	/* SMC64: affinity in a 64-bit arg */
 #define SMCCC_VERSION		0x80000000UL
 
 #define NR_CPUS			BOARD_NR_CPUS
@@ -248,6 +249,32 @@ static void test_smp(void)
 	stage = "smp";
 	uint64_t self = rsr("mpidr_el1") & 0xffffff;
 	int64_t ret[NR_CPUS];
+
+	/*
+	 * Print the affinity values we are about to ask for. Two boards differ
+	 * only in this table, so the screen has to say which one the running
+	 * image carries - otherwise a stale flash and a wrong map look the same.
+	 */
+	con_hex2("SMP", "self=", (uint32_t)self, "map1=",
+		 (uint32_t)BOARD_CPU_ON_MPIDR(1));
+	con_hex2("SMP", "map4=", (uint32_t)BOARD_CPU_ON_MPIDR(4), "map7=",
+		 (uint32_t)BOARD_CPU_ON_MPIDR(7));
+
+	/*
+	 * Ask before asking for anything: AFFINITY_INFO is read-only and says
+	 * whether the TZ knows each MPIDR and whether it is OFF (bit set) or
+	 * invalid (negative, bit in `bad`). If `bad` is all ones the table is
+	 * wrong and CPU_ON below would be asking for cores that do not exist.
+	 */
+	uint32_t aff_off = 0, aff_bad = 0;
+	for (int i = 1; i < NR_CPUS; i++) {
+		int64_t a = smc(PSCI_AFFINITY_INFO, BOARD_CPU_ON_MPIDR(i), 0, 0);
+		if (a == 1)
+			aff_off |= 1u << i;
+		else if (a < 0)
+			aff_bad |= 1u << i;
+	}
+	con_hex2("AFF", "off=", aff_off, "bad=", aff_bad);
 
 	for (int i = 1; i < NR_CPUS; i++)
 		ret[i] = smc(PSCI_CPU_ON, BOARD_CPU_ON_MPIDR(i),
@@ -517,6 +544,12 @@ void shim_main(uint64_t dtb)
 	stage = "alive";
 	con_begin(BLACK);
 	con_str("SHIM", "alive");
+	/*
+	 * Which image is this? Compile time is the only thing that can answer it
+	 * from the phone: the panel is the only output, and a stale boot image
+	 * looks exactly like a broken one.
+	 */
+	con_str("BUILD", __DATE__ " " __TIME__);
 
 	/*
 	 * 1. Panel.
