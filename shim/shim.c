@@ -103,6 +103,7 @@
 #define GICR_SIZE		BOARD_GICR_SIZE
 #define GICR_PE_SIZE		BOARD_GICR_PE_SIZE
 #define GICR_TYPER		0x08
+#define GICR_CTLR		0x00
 #define GICR_WAKER		0x14
 #define GICR_SGI		0x10000
 #define GICR_IGROUPR0		(GICR_SGI + 0x080)
@@ -136,6 +137,7 @@
 
 static inline uint32_t rd32(uintptr_t a) { return *(volatile uint32_t *)a; }
 static inline uint64_t rd64(uintptr_t a) { return *(volatile uint64_t *)a; }
+static inline uint8_t rd8(uintptr_t a) { return *(volatile uint8_t *)a; }
 static inline void wr32(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
 static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
 
@@ -299,18 +301,24 @@ static uintptr_t find_gicr(void);
 
 void secondary_main(uint64_t idx)
 {
+	/*
+	 * Report and get out. No GIC access from here.
+	 *
+	 * The old body found this core's redistributor and wrote IGROUPR0 and
+	 * IPRIORITYR on it. That is a write to a redistributor nothing has
+	 * woken: edk2-dipper initialises exactly one redistributor
+	 * (PcdCoreCount=1, the primary's), so every other core's is still
+	 * asleep, and a sleeping redistributor is entitled to reject writes to
+	 * its SGI/PPI frame by hanging the bus rather than returning an error.
+	 * test_smp() runs before test_gic(), so that fault would kill the SoC
+	 * with the colour bar still showing only the magenta from shim_main -
+	 * which is exactly the "the trace image shows no bar at all" symptom
+	 * that started this rewrite.
+	 *
+	 * Waking a secondary's redistributor is a job for the SMP bring-up
+	 * that the XNU port needs, not for a probe whose subject is the GIC.
+	 */
 	sec_mpidr[idx] = rsr("mpidr_el1") | (1ULL << 63);
-	if (idx == 1) {
-		uintptr_t r = find_gicr();
-		if (r) {
-			sec_probe[0] = rd32(r + GICR_IGROUPR0);
-			wr32(r + GICR_IGROUPR0, 0xffffffff);
-			sec_probe[1] = rd32(r + GICR_IGROUPR0);
-			wr8(r + GICR_IPRIORITYR + 19, 0xa0);
-			sec_probe[2] = rd32(r + GICR_IPRIORITYR + 16);
-		}
-		sec_probe[3] = r ? 1 : 0xdead;
-	}
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_CPU_OFF, 0, 0, 0);
 }
@@ -446,16 +454,34 @@ static __attribute__((unused)) void irq_window(const char *label, uintptr_t r, i
 }
 
 /*
- * GICv3 probe. Every step prints its line BEFORE it does anything that could
- * stop the SoC, so when the phone dies the last line on the screen names the
- * step that did it - and the first line proves the image ran at all.
+ * GICv3 probe, rewritten against the reference port.
  *
- * "GIC entry" missing means ABL never jumped here: the fault is the boot
- * image or the flash, not anything below. That is not a theoretical case: a
- * phone that goes straight to fastboot without printing anything has not
- * reached this function.
+ * edk2-dipper does not carry a single line of its own GIC code: it binds
+ * ArmGicLib/ArmGicArchLib to edk2's ArmPkg/Drivers/ArmGic and fills in the
+ * addresses as PCDs (XiaomiMI8Pkg.dsc:116-120 -
+ * PcdGicDistributorBase=0x17A00000, PcdGicRedistributorsBase=0x17A60000,
+ * PcdArmArchTimerIntrNum=0x12, PcdArmArchTimerVirtIntrNum=0x13,
+ * PcdArmGicV3WithV2Legacy=FALSE). That is the same address set dipper.dts
+ * declares, so the parameters were never the problem. What was wrong was the
+ * order and the bits, and this function now follows ArmGicV3Dxe's entry point
+ * step for step.
  *
- * Only EL1-safe registers are read. Reading an EL2 register from EL1 is an
+ * One translation is unavoidable. The reference reaches the CPU interface
+ * through ArmGicV3SetControlSystemRegisterEnable(), which writes ICC_SRE_EL2,
+ * because EDK2's DXE runs at EL2. We are the "kernel" as far as ABL is
+ * concerned, so we are at EL1 and the equivalent register is ICC_SRE_EL1 -
+ * same bit, same meaning, one exception level down. That also means the
+ * reference's ARE bit has to move: it ORs ARM_GIC_ICDDCR_ARE, which is bit 4
+ * = ARE_S, the *secure* affinity-routing enable, writable only at EL2. From
+ * non-secure EL1 the bit that counts is ARE_NS, bit 5.
+ *
+ * The old code wrote `dctlr | 0x13` - EnableGrp0 | EnableGrp1 | ARE_S. ARE_S
+ * is write-ignored in the non-secure view, so it enabled both interrupt
+ * groups while affinity routing stayed off, and then drove the CPU interface
+ * through ICC_*_EL1 regardless. That is precisely the mixed state the GICv3
+ * architecture forbids, and it is the one thing this rewrite exists to fix.
+ *
+ * Only EL1-safe registers are touched. Reading an EL2 register from EL1 is an
  * UNDEFINED exception, and ABL's EL2 vectors are not ours to land in - so
  * there is deliberately no HCR_EL2 / CNTHCTL_EL2 / ICC_SRE_EL2 here. If a
  * trap does happen it comes out as the blue panic screen with ESR and ELR,
@@ -475,11 +501,20 @@ static void __attribute__((unused)) test_gic(void)
 		 (uint32_t)(pfr0 >> 24) & 0xf);
 	MARK(0xff00ff00U);		/* green: EL1 sysregs read */
 
+	/*
+	 * 1. The distributor must decode. First MMIO touch: a wrong base or a
+	 *    missing MMU mapping faults here instead of corrupting something
+	 *    quietly. edk2 spends two gCpuArch->SetMemoryAttributes() calls on
+	 *    this step (ArmGicV3Dxe.c:780) - we inherit ABL's identity map.
+	 */
 	stage = "gic iidr";
 	con_hex2("GICD", "iidr=", rd32(GICD_BASE + 0x08), "typer=",
 		 rd32(GICD_BASE + 0x04));
 	MARK(0xffffff00U);		/* yellow: GICD decodes at 0x17a00000 */
 
+	/*
+	 * 2. System register interface, before anything else touches the GIC.
+	 */
 	stage = "gic sre";
 	uint64_t sre = rsr("icc_sre_el1");
 	if (!(sre & 1)) {
@@ -494,60 +529,160 @@ static void __attribute__((unused)) test_gic(void)
 	}
 	MARK(0xffff8000U);		/* orange: sysreg interface live */
 
-	stage = "gic dist";
+	/*
+	 * 3. Affinity routing. ArmGicV3Dxe.c:807 is the whole justification:
+	 *    "We will be driving this GIC in native v3 mode, i.e., with
+	 *    Affinity Routing enabled. So ensure that the ARE bit is set."
+	 *    ARE_NS, bit 5, and nothing else - no Group 0, no Group 1 yet.
+	 *    Those come at the end, because a distributor that is already
+	 *    delivering Group 0 while we are still rewriting its routing is a
+	 *    hang nobody can diagnose.
+	 */
+	stage = "gic are";
 	uint32_t dctlr = rd32(GICD_BASE);
-	con_hex2("CTLR", "was=", dctlr, "write=", dctlr | 0x13);
-	wr32(GICD_BASE, dctlr | 0x13);
-	gicd_wait_rwp();
-	con_hex2("GICD", "was=", dctlr, "now=", rd32(GICD_BASE));
-	MARK(0xffff0000U);		/* red: GICD.CTLR written, RWP cleared */
+	uint32_t are = dctlr | (1U << 5);		/* ARE_NS */
+	con_hex2("ARE", "was=", dctlr, "write=", are);
+	wr32(GICD_BASE, are);
+	isb();
+	con_hex2("ARE", "now=", rd32(GICD_BASE), "ds=",
+		 (rd32(GICD_BASE) >> 6) & 1);
+	MARK(0xffff0000U);		/* red: affinity routing enabled */
 
+	/*
+	 * 4. Our own redistributor, found exactly the way ArmGicV3Dxe.c:45
+	 *    (GicGetCpuRedistributorBase) does it: walk the region in
+	 *    redistributor-stride steps - dipper.dts says <0x0 0x20000>, and
+	 *    1 MB / 8 cores is 128 KB each, i.e. two 64 KB frames - and compare
+	 *    GICR_TYPER.Affinity against MPIDR_EL1, with Aff3 moved from MPIDR
+	 *    bits[39:32] down into TYPER bits[31:24].
+	 */
 	stage = "gic redist";
 	uintptr_t r = find_gicr();
 	if (!r) {
 		con_str("GICR", "not found");
 		return;
 	}
-	con_str("GICR", "found");
+	con_hex("GICR", (uint64_t)r);
+	con_hex2("GICR", "typer=", (uint32_t)rd64(r + GICR_TYPER), "lo=",
+		 (uint32_t)(rd64(r + GICR_TYPER) >> 32));
 	MARK(0xffffffffU);		/* white: redistributor matched by affinity */
+
+	/*
+	 * 5. Wake it. A redistributor that is still asleep rejects writes to
+	 *    its SGI/PPI frame, and some parts do that by hanging the bus
+	 *    rather than returning an error. ProcessorSleep is bit 1,
+	 *    ChildrenAsleep is bit 2.
+	 */
+	stage = "gic wake";
 	uint32_t waker = rd32(r + GICR_WAKER);
 	if (waker & 2) {
 		wr32(r + GICR_WAKER, waker & ~2U);
-		for (int i = 0; i < 100000 && (rd32(r + GICR_WAKER) & 4); i++)
+		for (int i = 0; i < 1000000 && (rd32(r + GICR_WAKER) & 4); i++)
 			;
 	}
-	con_hex2("GICR", "base=", r, "waker=", rd32(r + GICR_WAKER));
+	con_hex2("GICR", "waker=", rd32(r + GICR_WAKER), "ctlr=",
+		 rd32(r + GICR_CTLR));
 	MARK(0xff8000ffU);		/* purple: redistributor awake */
 
+	/*
+	 * 6. SGI/PPI frame: everything Group 1, priorities down, and the one
+	 *    source we actually want armed. edk2 reaches the same "all Group 1"
+	 *    state through GICR_ICDISR when it sees GICD_CTLR.DS set
+	 *    (ArmGicV3Dxe.c:838); GICR_IGROUPR0 is the redistributor's own group
+	 *    register for INTIDs 0-31 and does the same job from here.
+	 *
+	 *    Only the virtual timer is enabled. The old code also armed INTID 18
+	 *    and SGI 1; neither is needed to prove the GIC, and every extra
+	 *    enabled source is one more way for this probe to take an interrupt
+	 *    it has no handler for.
+	 */
 	stage = "gic config";
 	uint32_t en_before = rd32(r + GICR_ISENABLER0);
-	wr32(r + GICR_IGROUPR0, 0xffffffff);	/* NS view: secure bits are WI */
+	wr32(r + GICR_IGROUPR0, 0xffffffff);
 	for (int id = 0; id < 32; id++)
 		wr8(r + GICR_IPRIORITYR + id, 0xa0);
-	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
+	wr32(r + GICR_ISENABLER0, 1U << VTIMER_INTID);
 	con_hex2("ENABLE", "was=", en_before, "now=", rd32(r + GICR_ISENABLER0));
-	MARK(0xff00ff80U);		/* spring green: INTID 19/18/1 enabled */
+	con_hex2("GICR", "group=", rd32(r + GICR_IGROUPR0), "prio19=",
+		 rd8(r + GICR_IPRIORITYR + VTIMER_INTID));
+	MARK(0xff00ff80U);		/* spring green: INTID 19 enabled */
 
+	/*
+	 * 7. Mask the virtual timer before opening the door.
+	 *
+	 *    ICC_IGRPEN1 = 1 with CNTV_CTL_EL0.IMASK clear and the counter
+	 *    already past CNTV_CVAL_EL0 takes the interrupt on the next
+	 *    instruction boundary. Our vectors have no IRQ handler yet, so that
+	 *    lands in the panic screen - which tells us nothing about the GIC
+	 *    and would be indistinguishable from a GIC fault. The reference's
+	 *    TimerDxe programs the counter first and only then enables the
+	 *    source; we have no timer programme in this probe, so we keep the
+	 *    source masked and leave arming it to the step that sets a compare
+	 *    value.
+	 */
+	stage = "gic mask";
+	uint64_t vctl = rsr("cntv_ctl_el0");
+	wsr("cntv_ctl_el0", vctl | 2);			/* IMASK */
+	isb();
+	con_hex2("VTIMER", "ctl=", (uint32_t)rsr("cntv_ctl_el0"), "istatus=",
+		 (uint32_t)rsr("cntv_ctl_el0") & 1);
+	con_hex("VTIMER", rsr("cntv_cval_el0"));
+	con_hex("CNTVCT", rsr("cntvct_el0"));
+
+	/*
+	 * 8. The CPU interface, in ArmGicV3Dxe.c:880-893's order: priority mask
+	 *    first (0xff, everything through - the old 0xf0 threw away the
+	 *    lowest priority class for no reason), then binary point 0x7 = no
+	 *    preemption (the old 0 allowed preemption into a handler we do not
+	 *    have), then EOImode 0 so an EOIR also deactivates, and only then
+	 *    the group-1 enable.
+	 */
 	stage = "gic icc";
 	uint64_t ctlr = rsr("icc_ctlr_el1");
+	wsr("icc_pmr_el1", 0xff);
+	wsr("icc_bpr1_el1", 7);
 	wsr("icc_ctlr_el1", ctlr & ~2ULL);	/* EOImode 0: EOIR also deactivates */
-	wsr("icc_pmr_el1", 0xf0);
-	wsr("icc_bpr1_el1", 0);
 	wsr("icc_igrpen1_el1", 1);
 	isb();
-	con_hex2("ICC", "ctlr=", ctlr, "grpen1=", rsr("icc_igrpen1_el1"));
+	con_hex2("ICC", "ctlr=", (uint32_t)ctlr, "pmr=",
+		 (uint32_t)rsr("icc_pmr_el1"));
+	con_hex2("ICC", "bpr1=", (uint32_t)rsr("icc_bpr1_el1"), "grpen1=",
+		 (uint32_t)rsr("icc_igrpen1_el1"));
+	con_hex2("ICC", "hppir=", (uint32_t)rsr("icc_hppir1_el1"), "rpr=",
+		 (uint32_t)rsr("icc_rpr_el1"));
 	MARK(0xffffff80U);		/* pale yellow: Group 1 signalled */
 
+	/*
+	 * 9. And only now the distributor's group-1 enable, which is all
+	 *    ArmGicEnableDistributor() does once ARE is set: it ORs 0x2, never
+	 *    0x1. Group 0 stays off - it is the secure group and we are not
+	 *    secure.
+	 */
+	stage = "gic dist";
+	uint32_t dnow = rd32(GICD_BASE);
+	con_hex2("CTLR", "was=", dnow, "write=", dnow | 0x2);
+	wr32(GICD_BASE, dnow | 0x2);
+	gicd_wait_rwp();
+	con_hex2("GICD", "now=", rd32(GICD_BASE), "rwp=",
+		 (rd32(GICD_BASE) >> 31) & 1);
+
+	/*
+	 * 10. Optional: actually take the interrupt. Off by default because our
+	 *     vectors have no IRQ handler yet, so the first delivery lands in the
+	 *     panic screen. Turn it on once the GIC itself is proven and the
+	 *     handler is in place.
+	 */
 #if SHIM_GIC_IRQ
 	stage = "gic vtimer";
+	wsr("cntv_cval_el0", rsr("cntvct_el0") + rsr("cntfrq_el0") / 10);
+	wsr("cntv_ctl_el0", rsr("cntv_ctl_el0") & ~2ULL);	/* unmask */
+	isb();
 	irq_window("VTIMER", r, VTIMER_INTID);
-	stage = "gic sgi";
-	irq_window("SGI1", r, SGI_INTID);
+	wsr("cntv_ctl_el0", rsr("cntv_ctl_el0") | 2);		/* mask again */
+	isb();
 #else
 	con_str("GIC", "irq test off");
 #endif
-	wr32(r + GICR_ICENABLER0, 0xffffffff);
-	isb();
 	MARK(0xff808080U);		/* grey: probe finished */
 }
 

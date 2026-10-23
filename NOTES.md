@@ -267,6 +267,74 @@ its GDSC and clocks on first). A silent black screen with no fastboot return
 means the code runs and only the UART (`0xa84000`, back cover off) can say
 anything.
 
+**What edk2-dipper actually does (2026-10-23 22:30) - and what we got wrong.**
+The reference port carries **no GIC driver of its own**. It binds ArmGicLib /
+ArmGicArchLib to edk2's `ArmPkg/Drivers/ArmGic` and fills the addresses in as
+PCDs (`XiaomiMI8Pkg.dsc:116-120`: `PcdGicDistributorBase=0x17A00000`,
+`PcdGicRedistributorsBase=0x17A60000`, `PcdArmArchTimerIntrNum=0x12`,
+`PcdArmArchTimerVirtIntrNum=0x13`, `PcdArmGicV3WithV2Legacy=FALSE`), and maps
+GICD+GICR as DEVICE with an identity map (`DeviceMemoryMap.h:366-373` +
+`XiaomiMI8Mem.c:51`). `PcdCoreCount=1`, so it initialises exactly **one**
+redistributor - the primary's. UFS is the opposite story: a closed-source
+Qualcomm blob (`Binary/UFSDxe/UFSDxe.efi`, 761 KB, build path
+`.../QcomPkg/Drivers/UFSDxe/`) whose only hard dependency is the SMEM
+protocol, hand-assembled into an FFS file because there is no
+`UfsPassThruDxe` anywhere in the build.
+
+So the parameters were never the problem - ours match the DT
+(`interrupt-controller@17a00000`, `reg = <0x17a00000 0x10000 0x17a60000
+0x100000>`, `redistributor-stride = <0x0 0x20000>`, and
+`timer { interrupts = <... 0x1 0x2 ...> <... 0x1 0x3 ...> <... 0x1 0x1 ...> }`
+= INTID 18/19/13). The **order and the bits** were. Two real bugs, both now
+fixed in `test_gic()`:
+
+1. **GICD_CTLR wrote ARE_S instead of ARE_NS.** The old code wrote
+   `dctlr | 0x13` = EnableGrp0 | EnableGrp1 | ARE_S. Bit 4 is ARE_S, the
+   *secure* affinity-routing enable, and it is write-ignored from non-secure
+   EL1 - so both interrupt groups were enabled while affinity routing stayed
+   off, and the CPU interface was then driven through `ICC_*_EL1` anyway.
+   `ArmGicV3Dxe.c:807` says it outright: "We will be driving this GIC in
+   native v3 mode, i.e., with Affinity Routing enabled. So ensure that the
+   ARE bit is set." Its `ARM_GIC_ICDDCR_ARE` is `1 << 4` because EDK2's DXE
+   runs at **EL2**; translated to our EL1 the bit is ARE_NS, bit 5.
+   `ArmGicEnableDistributor()` then ORs only `0x2` (EnableGrp1) - never
+   `0x1`. Group 0 stays off: it is the secure group and we are not secure.
+2. **`secondary_main()` wrote another core's redistributor.** It found CPU1's
+   GICR and wrote IGROUPR0/IPRIORITYR without waking it. The reference
+   initialises one redistributor only, so every other core's is still asleep,
+   and a sleeping redistributor is entitled to reject SGI/PPI-frame writes by
+   hanging the bus. `test_smp()` runs *before* `test_gic()`, so this fault
+   would kill the SoC with only the magenta bar from `shim_main` on screen -
+   which is exactly the "no colour bar at all" symptom that started this
+   rewrite. The GICR writes are gone; the core just reports its MPIDR and
+   turns itself off.
+
+Also borrowed: `ICC_PMR` 0xf0 -> 0xff, `ICC_BPR1` 0 -> 0x7 (no preemption),
+and the virtual timer is masked (`CNTV_CTL_EL0.IMASK`) *before*
+`ICC_IGRPEN1 = 1`, because taking an interrupt our vectors have no handler
+for would land in the panic screen and be indistinguishable from a GIC fault.
+`redistributor-stride = <0x0 0x20000>` with a 1 MB region and 8 cores means
+128 KB per core = two 64 KB frames, which confirms our `GICR_SGI = 0x10000`
+was right all along.
+
+**Exact restore verified (2026-10-23 22:31).** Building from the
+`dipper-known-good` tag reproduces `shim-boot-dipper-smp.img` with **5
+differing bytes, all inside `__TIME__`** (`22:31:45` vs `19:50:49`). That
+build is now `shim/out/shim-boot-dipper.img` (md5
+`6b1970305f1a4ced57ad48e0813d9ba9`). The current tree is *not* a byte-exact
+restore because `secondary_main` changed - which is intentional and strictly
+safer, but it means the tag is the thing to build if a byte-identical image
+is ever wanted again.
+
+**New probe image (2026-10-23 22:33).** `shim/out/shim-gicv3-dipper.img`
+(md5 `8daf42f225afe1fbbd07f8af1e3c496b`, BUILD `22:32:xx`, 30 375 936 bytes,
+7414-page kernel field). Built with
+`BOARD=dipper OUT=out-gic6 SHIM_GIC=1 SHIM_GIC_IRQ=0 SHIM_EXTRA_CFLAGS=-DSHIM_TRACE=1 ./build.sh`.
+`shim/diffimg.py` (new) decompresses the gzip stream out of two boot images
+and diffs the resulting `Image` byte for byte - it is what proved the
+5-byte restore above and what killed the earlier "the default image is
+broken" theory.
+
 **Colour-bar milestone tracing (2026-10-23 21:53) - the GIC fault localizer.**
 `shim/out/shim-gictrace-dipper.img` (md5 `4ba3c6030d11b193676856a0b96c14c1`,
 BUILD stamp `Oct 23 2026 21:53:17`, kernel_size 30 364 551 = **7413 pages**,
