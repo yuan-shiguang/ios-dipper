@@ -355,12 +355,12 @@ identity of the last action that completed. No text reading required.
 | green | `ff00ff00` | EL1 sysregs read (MPIDR/CNTFRQ/CNTPCT) |
 | yellow | `ffffff00` | GICD decodes at `0x17a00000` |
 | orange | `ffff8000` | sysreg interface (ICC_*_EL1) live |
-| red | `ffff0000` | GICD.CTLR written, RWP cleared |
+| red | `ffff0000` | affinity routing (ARE_NS) enabled in GICD.CTLR |
 | white | `ffffffff` | redistributor matched by affinity |
 | purple | `ff8000ff` | redistributor awake (GICR_WAKER.Clear+ChildrenAsleep) |
-| spring green | `ff00ff80` | INTID 19/18/1 enabled in GICR |
-| pale yellow | `ffffff80` | Group 1 signalled |
-| grey | `ff808080` | probe finished, control returns |
+| spring green | `ff00ff80` | INTID 19 (virtual timer) enabled in GICR |
+| pale yellow | `ffffff80` | Group 1 signalled (ICC_PMR/BPR1/EOImode/IGRPEN1) |
+| grey | `ff808080` | probe finished, GICD.CTLR Group 1 on |
 
 Read with `fastboot flash boot shim-gictrace-dipper.img && fastboot reboot`.
 `fastboot boot` is unusable on dipper (00000050 on every image, including the
