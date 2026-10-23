@@ -129,9 +129,21 @@ image from a broken one.
 
 **Known-good configuration (2026-10-23 19:26):** `SHIM_SMP=1` (AFFINITY_INFO
 only) with `SHIM_GIC=0`, `SHIM_UFS=0`, `SHIM_UART=0` - the dipper default. That
-reaches the full console and holds. `SHIM_SMP=2 SHIM_GIC=1` (the full image)
-does **not** come back from fastboot, so one of those two is fatal and they
-are being separated: `shim-smp2-dipper.img` is SMP=2 with GIC still off.
+reaches the full console and holds.
+
+**CPU_ON is what kills the phone (measured 2026-10-23 19:30).** With the
+corrected `MPIDR(i) = i << 8` table and GIC off, `shim-smp2-dipper.img` never
+comes back from fastboot. With the *wrong* old table it did survive (three
+cores came up), so it is not "PSCI CPU_ON" in general: it is asking for
+0x100..0x700 specifically. Two candidates, neither tested yet: the TZ may
+reject/abort on those affinity values, or starting all seven cores - including
+the four A75s, which are a separate rail - browns the device out. Next step is
+to start cpu1 only, then cpu2, and see where it breaks, rather than all seven
+at once.
+
+The `BUILD` line used to be printed before `con_clear()`, which resets the
+cursor to row 0, so it was wiped before it could be read - that is why the
+first screenshots never showed a timestamp. It is now printed after the clear.
 
 **Still unknown (needs the phone):** whether all 8 cores now report in with
 `BOARD_CPU_ON_MPIDR(i) = i << 8`; the GICv3 base/redistributor layout on

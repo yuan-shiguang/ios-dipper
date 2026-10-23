@@ -559,12 +559,6 @@ void shim_main(uint64_t dtb)
 	stage = "alive";
 	con_begin(BLACK);
 	con_str("SHIM", "alive");
-	/*
-	 * Which image is this? Compile time is the only thing that can answer it
-	 * from the phone: the panel is the only output, and a stale boot image
-	 * looks exactly like a broken one.
-	 */
-	con_str("BUILD", __DATE__ " " __TIME__);
 
 	/*
 	 * 1. Panel.
@@ -585,6 +579,14 @@ void shim_main(uint64_t dtb)
 #ifdef SHIM_PITCH_PROBE
 	pitch_probe();
 #endif
+	/*
+	 * Which image is this? Compile time is the only thing that can answer it
+	 * from the phone: the panel is the only output and a stale boot image
+	 * looks exactly like a broken one. It has to come *after* con_clear(),
+	 * which resets the cursor to row 0 - printed before it, this line is
+	 * wiped before anybody can read it.
+	 */
+	con_str("BUILD", __DATE__ " " __TIME__);
 	con_str("SHIM", BOARD_NAME " " BOARD_SOC " boot shim");
 	con_hex2("FB", "base=", (uint32_t)FB_BASE, "stride=", FB_STRIDE);
 	con_hex2("FB", "w=", FB_W, "h=", FB_H);
