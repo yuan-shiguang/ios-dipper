@@ -127,6 +127,12 @@ always read the `BUILD` line (compile timestamp, second console line) before
 believing anything else on the screen: it is the only way to tell a stale boot
 image from a broken one.
 
+**Known-good configuration (2026-10-23 19:26):** `SHIM_SMP=1` (AFFINITY_INFO
+only) with `SHIM_GIC=0`, `SHIM_UFS=0`, `SHIM_UART=0` - the dipper default. That
+reaches the full console and holds. `SHIM_SMP=2 SHIM_GIC=1` (the full image)
+does **not** come back from fastboot, so one of those two is fatal and they
+are being separated: `shim-smp2-dipper.img` is SMP=2 with GIC still off.
+
 **Still unknown (needs the phone):** whether all 8 cores now report in with
 `BOARD_CPU_ON_MPIDR(i) = i << 8`; the GICv3 base/redistributor layout on
 SDM845 (`0x17a00000`/`0x17a60000` per the DT, untested - `SHIM_GIC=1`); UFS on
