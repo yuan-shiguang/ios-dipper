@@ -257,8 +257,10 @@ void secondary_main(uint64_t idx)
 static void test_smp(void)
 {
 	stage = "smp";
-	uint64_t self = rsr("mpidr_el1") & 0xffffff;
 	int64_t ret[NR_CPUS];
+
+#if SHIM_SMP >= 1
+	uint64_t self = rsr("mpidr_el1") & 0xffffff;
 
 	/*
 	 * Print the affinity values we are about to ask for. Two boards differ
@@ -285,6 +287,7 @@ static void test_smp(void)
 			aff_bad |= 1u << i;
 	}
 	con_hex2("AFF", "off=", aff_off, "bad=", aff_bad);
+#endif
 
 #if SHIM_SMP >= 2
 	for (int i = 1; i < NR_CPUS; i++)
@@ -294,15 +297,18 @@ static void test_smp(void)
 	for (int i = 1; i < NR_CPUS; i++) {
 		char label[] = "CPU0";
 		label[3] = '0' + i;
-		if (BOARD_CPU_ON_MPIDR(i) == self)
+		if (BOARD_CPU_ON_MPIDR(i) == (rsr("mpidr_el1") & 0xffffff))
 			con_str(label, "is boot cpu");
 		else
 			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
 				 (uint32_t)sec_mpidr[i] | (sec_mpidr[i] ? 0 : 0xdead0000));
 	}
-#else
+#elif SHIM_SMP >= 1
 	(void)ret;
 	con_str("SMP", "no CPU_ON in this build");
+#else
+	(void)ret;
+	con_str("SMP", "no PSCI in this build");
 #endif
 }
 
