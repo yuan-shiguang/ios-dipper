@@ -32,6 +32,18 @@
 #ifndef SHIM_GIC
 #define SHIM_GIC	1
 #endif
+/*
+ * The interrupt-delivery half of the GIC probe, behind its own flag.
+ *
+ * An IRQ storm is the one failure the probe cannot report from inside
+ * itself: by the time the counter would be printed, the SoC is already
+ * wedged and the watchdog has taken the screen away. So the register
+ * programming is proven first with this off, and the interrupt path is
+ * only armed once that is known good.
+ */
+#ifndef SHIM_GIC_IRQ
+#define SHIM_GIC_IRQ	1
+#endif
 #ifndef SHIM_MMU
 #define SHIM_MMU	0	/* MMU tests are for the kernel port, not bring-up */
 #endif
@@ -112,7 +124,7 @@ static volatile uint32_t irq_count, irq_other, irq_last;
 static volatile int irq_src;
 
 /* ICC_SGI1R_EL1 value targeting the calling core only. */
-static uint64_t sgi_self(unsigned id)
+static __attribute__((unused)) uint64_t sgi_self(unsigned id)
 {
 	uint64_t m = rsr("mpidr_el1");
 	return ((m >> 16) & 0xff) << 32 |	/* Aff2 */
@@ -337,7 +349,7 @@ static void gicd_wait_rwp(void)
 }
 
 /* Run one interrupt source for ~300 ms and report what the GIC saw. */
-static void irq_window(const char *label, uintptr_t r, int src)
+static __attribute__((unused)) void irq_window(const char *label, uintptr_t r, int src)
 {
 	uint64_t f = rsr("cntfrq_el0");
 	uint32_t pend = 0, act = 0, isr = 0, hppi = 0x3ff, ist = 0;
@@ -388,14 +400,46 @@ static void irq_window(const char *label, uintptr_t r, int src)
 	con_hex2(" pre", "tctl=", ist, "last=", irq_last);
 }
 
+/*
+ * GICv3 probe. Every step prints its line BEFORE it does anything that could
+ * stop the SoC, so when the phone dies the last line on the screen names the
+ * step that did it - and the first line proves the image ran at all.
+ *
+ * "GIC entry" missing means ABL never jumped here: the fault is the boot
+ * image or the flash, not anything below. That is not a theoretical case: a
+ * phone that goes straight to fastboot without printing anything has not
+ * reached this function.
+ *
+ * Only EL1-safe registers are read. Reading an EL2 register from EL1 is an
+ * UNDEFINED exception, and ABL's EL2 vectors are not ours to land in - so
+ * there is deliberately no HCR_EL2 / CNTHCTL_EL2 / ICC_SRE_EL2 here. If a
+ * trap does happen it comes out as the blue panic screen with ESR and ELR,
+ * which says far more than fastboot ever does.
+ */
 static void __attribute__((unused)) test_gic(void)
 {
+	con_str("GIC", "entry");
+
+	con_hex2("EL", "cur=", (uint32_t)rsr("currentel"), "sctlr=",
+		 (uint32_t)rsr("sctlr_el1"));
+	con_hex2("CPU", "midr=", (uint32_t)rsr("midr_el1"), "mpidr=",
+		 (uint32_t)rsr("mpidr_el1"));
+	uint64_t pfr0 = rsr("id_aa64pfr0_el1");
+	con_hex2("PFR", "pfr0=", (uint32_t)pfr0, "gic=",
+		 (uint32_t)(pfr0 >> 24) & 0xf);
+
+	stage = "gic iidr";
+	con_hex2("GICD", "iidr=", rd32(GICD_BASE + 0x08), "typer=",
+		 rd32(GICD_BASE + 0x04));
+
 	stage = "gic sre";
 	uint64_t sre = rsr("icc_sre_el1");
 	if (!(sre & 1)) {
 		wsr("icc_sre_el1", sre | 1);
 		isb();
 	}
+	con_hex2("SRE", "was=", (uint32_t)sre, "now=",
+		 (uint32_t)rsr("icc_sre_el1"));
 	if (!(rsr("icc_sre_el1") & 1)) {
 		con_str("GIC", "no sysreg iface, skip");
 		return;
@@ -403,7 +447,7 @@ static void __attribute__((unused)) test_gic(void)
 
 	stage = "gic dist";
 	uint32_t dctlr = rd32(GICD_BASE);
-	/* Non-secure view (DS=0): bit0 EnableGrp1, bit1 EnableGrp1A, bit4 ARE_NS; Linux writes 0x13 */
+	con_hex2("CTLR", "was=", dctlr, "write=", dctlr | 0x13);
 	wr32(GICD_BASE, dctlr | 0x13);
 	gicd_wait_rwp();
 	con_hex2("GICD", "was=", dctlr, "now=", rd32(GICD_BASE));
@@ -414,6 +458,7 @@ static void __attribute__((unused)) test_gic(void)
 		con_str("GICR", "not found");
 		return;
 	}
+	con_str("GICR", "found");
 	uint32_t waker = rd32(r + GICR_WAKER);
 	if (waker & 2) {
 		wr32(r + GICR_WAKER, waker & ~2U);
@@ -423,17 +468,14 @@ static void __attribute__((unused)) test_gic(void)
 	con_hex2("GICR", "base=", r, "waker=", rd32(r + GICR_WAKER));
 
 	stage = "gic config";
-	uint32_t grp = rd32(r + GICR_IGROUPR0);
-	wr32(r + GICR_IGROUPR0, 0xffffffff);	/* NS view: secure bits are WI */
 	uint32_t en_before = rd32(r + GICR_ISENABLER0);
-	uint32_t pri_before = rd32(r + GICR_IPRIORITYR + 16);	/* INTIDs 16..19 */
+	wr32(r + GICR_IGROUPR0, 0xffffffff);	/* NS view: secure bits are WI */
 	for (int id = 0; id < 32; id++)
 		wr8(r + GICR_IPRIORITYR + id, 0xa0);
 	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
 	con_hex2("ENABLE", "was=", en_before, "now=", rd32(r + GICR_ISENABLER0));
-	(void)grp;
-	(void)pri_before;
 
+	stage = "gic icc";
 	uint64_t ctlr = rsr("icc_ctlr_el1");
 	wsr("icc_ctlr_el1", ctlr & ~2ULL);	/* EOImode 0: EOIR also deactivates */
 	wsr("icc_pmr_el1", 0xf0);
@@ -442,10 +484,14 @@ static void __attribute__((unused)) test_gic(void)
 	isb();
 	con_hex2("ICC", "ctlr=", ctlr, "grpen1=", rsr("icc_igrpen1_el1"));
 
+#if SHIM_GIC_IRQ
 	stage = "gic vtimer";
 	irq_window("VTIMER", r, VTIMER_INTID);
 	stage = "gic sgi";
 	irq_window("SGI1", r, SGI_INTID);
+#else
+	con_str("GIC", "irq test off");
+#endif
 	wr32(r + GICR_ICENABLER0, 0xffffffff);
 	isb();
 }

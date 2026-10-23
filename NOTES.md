@@ -172,43 +172,71 @@ seven secondary cores: `CPU1..CPU7` every one `ret=0` and
 `0x81000700`) - exactly the DT `reg` values, so PSCI `CPU_ON` (SMC64
 `0xc4000003`) is fully working and the only fatal call was `AFFINITY_INFO`.
 
-**Display notch fixed the same build.** The `BUILD` compile-time stamp appeared
-but sat clipped behind the camera cut-out of dipper's EA8074 panel. Measured:
-with the default 24 px inset row 0 ("SHIM alive", y 24..72) was readable but
-row 1 ("BUILD", y 72..120) was not - so the cut-out's bottom edge is somewhere
-in (72, 120]. New per-board constant `BOARD_CON_TOP = 120` (the FHD+ status-bar
-height, safely above every candidate in that range) moves the whole console
-below it; `console.c` now computes `y0 = CON_TOP + row * CH_H` instead of using
-the left margin for the vertical origin too. sweet is unaffected (default 24).
-The console uses ~20 rows of 48 px, so losing the top 120 px still leaves 44
-rows - no downside.
+**Display notch: tried, then reverted on request (2026-10-23 20:21).** The
+`BUILD` stamp sat clipped behind the camera cut-out: at the default 24 px
+inset row 0 ("SHIM alive", y 24..72) was readable and row 1 ("BUILD",
+y 72..120) was not, so the cut-out's bottom edge lies in (72, 120]. A
+per-board `BOARD_CON_TOP` (dipper 120 = the FHD+ status-bar height, default
+24) was added and `console.c` now computes `y0 = CON_TOP + row * CH_H`. The
+user's call was to drop it - "不要下移不管构建时间" - so the dipper override
+is gone and the console is back at the top. The generic constant stays at 24
+(identical to the old `MARGIN` behaviour) for a future board that needs it.
+
+**`shim-gic-dipper.img` went straight to fastboot with NO console output
+(2026-10-23 20:15) - and that rules out the GIC code.** The console prints 16
+lines before `test_gic` is even called, and a hang inside `test_gic` would
+leave those lines on the screen until the watchdog reset. Zero output means
+the shim never ran: either ABL refused the image, the flash was bad, or the
+phone was never rebooted (the recurring false alarm). Note the GIC image is
+exactly one 4096-byte page bigger than the default (kernel field 7414 pages
+vs 7413, gzip 8840 vs 8052) - the only structural difference between the two.
+
+**The probe is now instrumented to answer that in one flash.** `test_gic`
+prints a line *before* every step that can stop the SoC, so the last line on
+the screen names the step that did it, and the first line (`GIC entry`) proves
+the image ran at all:
+
+| line | step |
+|---|---|
+| `GIC entry` | if missing, ABL never jumped - flash/image fault, not GIC |
+| `EL cur= sctlr=` | `CurrentEL` + `SCTLR_EL1` (EL1-safe only: reading an EL2 register from EL1 is an UNDEFINED exception, and ABL's EL2 vectors are not ours to land in - so no `HCR_EL2`/`CNTHCTL_EL2`/`ICC_SRE_EL2` anywhere in the probe) |
+| `CPU midr= mpidr=` | core identity and the MPIDR the GICR match will use |
+| `PFR pfr0= gic=` | `ID_AA64PFR0_EL1` GIC field: 1 = sysreg interface exists |
+| `GICD iidr= typer=` | the distributor decodes at `0x17a00000` |
+| `SRE was= now=` | sysreg interface enable |
+| `CTLR was= write=` | what is about to go into `GICD.CTLR` |
+| `GICD was= now=` | the write took, RWP cleared |
+| `GICR found` / `base= waker=` | redistributor located and awake |
+| `ENABLE was= now=` | INTID 19/18/1 enabled |
+| `ICC ctlr= grpen1=` | Group 1 signalled |
+| `irq test off` | interrupt half skipped (`SHIM_GIC_IRQ=0`) |
+
+`SHIM_GIC_IRQ` is new and defaults to 1. It gates the `irq_window()` calls,
+because an IRQ storm is the one failure the probe cannot report from inside
+itself - the register programming is proven first, then the interrupt path.
 
 **Built artefacts (WSL, `BOARD=dipper`), both pass `check_bootimg.py`:**
 
 - `shim/out/shim-boot-dipper.img` - default (`SHIM_SMP=1`, no AFFINITY_INFO,
-  no UART/UFS/GIC) + notch fix. This is the new known-good reference.
-- `shim/out/shim-gic-dipper.img` - same plus `SHIM_GIC=1`, the **first ever
-  GICv3 probe on this phone**. It enables `GICD.CTLR` (writes `0x13`, waits for
-  RWP), finds the redistributor by matching `GICR_TYPER.Affinity` against
-  `MPIDR_EL1`, wakes it (`WAKER.ProcessorSleep` clear, waits for
-  `ChildrenAsleep` to drop), sets every SGI/PPI priority to `0xa0`, enables
-  INTIDs 19 (virtual timer), 18 (physical timer) and SGI 1, programs
-  `ICC_*` (EOImode 0, `PMR 0xf0`, `BPR1 0`, `IGRPEN1 1`) and then runs a 300 ms
-  window on the virtual timer and one on the SGI, printing pending/active/
-  `ISR_EL1`/`HPPIR1` and the IRQ counts.
+  no UART/UFS/GIC), console back at the top. Structurally identical to the
+  last known-good build (gzip 8052, 30 371 840 B). **Flash this first** to
+  confirm the phone and the flash path are healthy after the revert.
+- `shim/out/shim-gicmark-dipper.img` - same plus `SHIM_GIC=1
+  SHIM_GIC_IRQ=0`: the instrumented GICv3 probe above, register programming
+  only, no interrupt delivery, nothing in it that can hang the SoC.
 
-Flash it with two separate commands (never a pipe):
+Two separate commands, never a pipe, and wait for the flash to finish:
 
 ```
-fastboot flash boot shim-gic-dipper.img
+fastboot flash boot shim-gicmark-dipper.img
 fastboot reboot
 ```
 
-`VTIMER irqs=N` with `N` roughly 30 (300 ms at the 10 ms period) and a non-zero
-`pend`/`act` bit 19 before the window closes is the pass condition. If the
-phone resets to fastboot, `SHIM_GIC=0` is the rollback and the fault is in the
-GICD/GICR programming, not in the timer - the timer counter was already proven
-counting at 19.2 MHz.
+Decision tree: no output at all -> re-flash `shim-boot-dipper.img`; if that
+also shows nothing the boot partition / flash path is at fault, not the code.
+Output stopping after one of the lines above -> that step is the killer, and
+a blue panic screen with `ESR`/`ELR` is even better news, because it names the
+faulting instruction.
 
 **Still unknown (needs the phone):** UFS on SDM845 (`0x1d84000`, untested, needs
 its GDSC and clocks on first). A silent black screen with no fastboot return

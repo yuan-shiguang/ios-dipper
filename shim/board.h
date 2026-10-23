@@ -62,19 +62,6 @@
 #define BOARD_FB_BYTES		0x02400000UL	/* the whole carve-out */
 
 /*
- * Text starts this many pixels below the top of the panel. dipper's EA8074 is
- * a notched AMOLED: the camera cut-out occupies the top of the 2248 rows and
- * whatever lands there is physically unreachable. Measured: with the default
- * 24 px inset row 0 ("SHIM alive", y 24..72) was readable but row 1
- * ("BUILD", y 72..120) came out clipped - so the cut-out's bottom edge is
- * somewhere in (72, 120]. 120 is the FHD+ status-bar height and clears every
- * candidate in that range; the console uses ~20 rows of 48 px, so losing the
- * top 120 px still leaves 44 rows. On a board with no notch the default 24 px
- * is plenty.
- */
-#define BOARD_CON_TOP		120
-
-/*
  * Debug UART: qupv3_se9_2uart (GENI SE) at 0xa84000, the console that
  * dipper-p0.dtsi leaves enabled. ABL initialises it, so console.c only has to
  * push bytes into SE_GENI_TX_FIFOn. The pads are on the mainboard under the
