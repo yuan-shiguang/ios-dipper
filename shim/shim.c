@@ -143,21 +143,14 @@ static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
 
 #if SHIM_TRACE
 /*
- * One full-width bar, 48 px tall, near the bottom of the panel - above the
- * rounded corner that already swallowed the asm beacon's blue square. Each
- * milestone repaints it, so exactly one colour is ever on screen and it is
- * the colour of the last milestone that started.
+ * The milestone bar now lives in console.c (con_mark), because the console
+ * scrolls: a bar painted from here would slide up with the text and vanish
+ * on the first overflow, which is exactly when it is needed most. What is
+ * left here is the call site discipline - paint the colour *before* doing
+ * the thing that might hang, so the colour on screen names the last step
+ * that ran.
  */
-static void mark_bar(uint32_t c)
-{
-	const int y0 = FB_H - 200;
-	for (int y = 0; y < 48; y++) {
-		volatile uint32_t *line = con_fb + (uint32_t)(y0 + y) * (FB_STRIDE / 4);
-		for (int x = 0; x < FB_W; x++)
-			line[x] = c;
-	}
-}
-#define MARK(c)	mark_bar(c)
+#define MARK(c)	con_mark(c)
 #else
 #define MARK(c)	do { } while (0)
 #endif
@@ -889,9 +882,13 @@ void shim_main(uint64_t dtb)
 	con_skip();
 #endif
 
-	/* 7. Storage, the probe most likely to hang. */
+	/* 7. Storage, the probe most likely to hang. The colour goes on before
+	 *    the first UFS register access, and the serial log is drained first,
+	 *    so a wedged NoC still leaves both channels naming the same step. */
 #if SHIM_UFS
 	stage = "ufs";
+	MARK(0xff008080U);		/* teal: reached test_ufs */
+	con_uart_drain();
 	test_ufs();
 	con_skip();
 #endif

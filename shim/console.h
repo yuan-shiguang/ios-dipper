@@ -18,6 +18,18 @@
  */
 #define CON_TOP		BOARD_CON_TOP
 
+/* Glyph geometry, shared with host_test so the layout can be checked
+ * without a flash. */
+#define SCALE		3
+#define CH_W		(8 * SCALE)
+#define CH_H		(16 * SCALE)
+#define MARGIN		24
+#define LABEL_COLS	8
+
+/* Milestone strip: full width, pinned below the last text row. */
+#define MARK_H		64
+#define MAX_ROW		((FB_H - MARK_H - CON_TOP) / CH_H)
+
 #define RED	0xffff0000U
 #define BLUE	0xff0000a0U
 #define WHITE	0xffffffffU
@@ -47,6 +59,7 @@ void con_fill(uint32_t c);
  */
 void con_uart_init(void);
 int con_uart_ok(void);
+void con_uart_drain(void);
 
 void con_clear(uint32_t bg);
 
@@ -64,3 +77,11 @@ void con_str(const char *label, const char *s);
 void con_hex(const char *label, uint64_t v);
 /* label, then "a=xxxxxxxx b=xxxxxxxx" style pairs of 32-bit values */
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb);
+
+/*
+ * Milestone colour bar: a full-width strip pinned to the bottom of the
+ * screen, below the last text row. Paint it *before* doing the thing that
+ * might hang, so the colour left on screen names the last step that ran.
+ * The console owns the strip - it survives scrolling and con_clear().
+ */
+void con_mark(uint32_t c);

@@ -547,6 +547,105 @@ Read with `fastboot flash boot shim-gictrace-dipper.img && fastboot reboot`.
 `fastboot boot` is unusable on dipper (00000050 on every image, including the
 reference project's own `uefi.img`).
 
+## Milestone 5: UFS (2026-10-23)
+
+**Why nothing was ever seen.** `shim/console.c` had `row++` with no bound and
+no scroll, so once the GIC section had filled the screen the UFS probe kept
+painting glyphs into framebuffer rows the panel never scans out. A probe that
+prints 25 lines looked exactly like a probe that printed none. The host render
+proved it: the first UFS build's output was simply off the bottom of the panel.
+
+**Console rewritten to scroll.** `console.c` now:
+
+- `scroll_up()`: one 48-row memmove of the *text area only*, then blanks the
+  new bottom row. ~50k stores at 1080x4 - with the MMU off every one is a
+  Device store, so milliseconds, and it only runs once the screen is full.
+- `row_reserve()` is called **before** drawing, not after. Scrolling after
+  would push the line just printed up a row as well, so a screen that holds
+  45 lines would show 44 plus a blank - and the last line of a probe is the
+  one that names the failing step.
+- `MAX_ROW = (FB_H - MARK_H - CON_TOP) / CH_H` = **45** on dipper
+  (2248 - 64 - 24) / 48.
+
+**The milestone bar moved into the console.** `mark_bar()` used to live in
+`shim.c` at `FB_H - 200` - i.e. text rows 42-44, which scrolling would have
+dragged up and off the screen. It is now `con_mark()` in `console.c`: a 64 px
+strip pinned to the very bottom, below the last text row, repainted by
+`con_clear()` and untouched by `scroll_up()`. `MARK(c)` in `shim.c` is now
+just `con_mark(c)`, so the call-site discipline is unchanged - paint the
+colour *before* the step that might hang.
+
+**Verified without a flash.** `shim/host_test.c` prints `MAX_ROW + 12` lines
+with a teal bar underneath and renders to `out/ufs-host.ppm`;
+`shim/checkrender.py` OCRs the labels out of the PPM using `font.h` and
+asserts 45 readable lines, `L12` at the top, `L56` at the bottom, a uniform
+grey bar, and no glyph inside it. That is how the off-by-one in the first
+`row_next()` draft was caught.
+
+**UFS probe cross-checked against the working driver.** The descriptor
+encoding is the one in `xnu/patches/0028-sweet-ufs-root-device.patch`, which
+runs on sweet hardware: `dw0 = (1u << 28) | ((len ? 2u : 0u) << 25) | (1u <<
+24)` (CT=1 UFS storage, DD=2 device-to-host, I=1), `resp` offset/length both
+512 B, PRDT at 1024 B. Two things the shim was missing and now has:
+
+- `ucd.resp[6]` (UPIU response code) is checked as well as `resp[7]` (SCSI
+  status). A command can fail at the UPIU level while the SCSI status still
+  reads 0, so the old code reported failures as successes.
+- `REG_IS` is acknowledged after every completion, as `ufshcd` does, so a
+  stale status cannot leak into the next command.
+
+Reported per command as `ocs/r/s=` = OCS | UPIU response | SCSI status, packed
+into 24 bits, alongside `rc=` (0 ok, 1 timeout, 2 OCS error, 3 not a RESPONSE
+UPIU, 4 non-zero response/status).
+
+**Image:** `shim/out/shim-ufs-dipper.img` (md5
+`4e2b4baa754c38ac23abadde16a86bdc`, FLG `0x00`, 30 375 936 B), built with
+
+```
+BOARD=dipper OUT=out-ufs SHIM_UFS=1 SHIM_GIC=1 SHIM_GIC_IRQ=0 \
+  SHIM_UART=1 SHIM_SMP=1 SHIM_EXTRA_CFLAGS=-DSHIM_TRACE=1 ./build.sh
+```
+
+`SHIM_GIC_IRQ=0` keeps the virtual timer masked (`CNTV_CTL_EL0.IMASK`), so
+nothing interrupts the UFS polling loop; the GIC register half still runs
+because it is proven and it is the context for anything that goes wrong later.
+`SHIM_UART=1` gives the serial mirror, and `con_uart_drain()` is called
+immediately before the first UFS register access so a wedged NoC still leaves
+both channels naming the same step.
+
+**New milestone colour:** teal `ff008080` = reached `test_ufs`, painted before
+the first UFS register read.
+
+**Expected output** (scroll keeps the last 45 lines, so the GIC block scrolls
+off and UFS fills the screen):
+
+```
+UFS     milestone 5 probe (read-only)
+UFS     ver=00000101 cap=...
+UFS     hce=00000001 hcs=0000000?      <- HCE on, DP, UTRLRDY
+UFS     is=... rsr=... utrlba=... hi=...
+UFS     dbr=... nutrs=32
+UFS     ours=... rsr=00000001          <- our transfer list is live
+UFS TUR rc=00000000 ocs/r/s=00000000   <- unit attention clear
+UFS CAP rc=00000000 ocs/r/s=00000000
+UFS LUN0 lastlba=... blk=...
+UFS READ rc=00000000 ocs/r/s=00000000
+UFS MBR sig=aa55 type=0ee
+UFS GPT EFI PART
+UFS GPT entries=... lba=2
+<one line per partition >= 64 MiB: name lba= MiB=>
+```
+
+Decision tree, same shape as the GIC one: nothing at all after the earlier
+probes -> the image or the flash path, re-flash `shim-boot-dipper.img`. Output
+stopping part-way -> the last line names the step, and a teal bar with nothing
+under it means the very first UFS register read wedged the NoC. A blue panic
+screen with `ESR`/`ELR` is better news still, because it names the faulting
+instruction. Worst case, per `build.sh`'s warning: an unclocked UFS register
+does not return a slave error on SDM845, it stalls the interconnect until the
+PMIC is power-cycled - which is exactly why `SHIM_UFS` defaults to 0 on this
+board and why the colour is painted before the access rather than after.
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<

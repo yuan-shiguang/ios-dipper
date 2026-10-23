@@ -15,12 +15,6 @@
 #include "console.h"
 #include "font.h"
 
-#define SCALE		3
-#define CH_W		(8 * SCALE)
-#define CH_H		(16 * SCALE)
-#define MARGIN		24
-#define LABEL_COLS	8
-
 volatile uint32_t *con_fb = (volatile uint32_t *)FB_BASE;
 static uint32_t con_bg;
 static int row;
@@ -117,6 +111,22 @@ int con_uart_ok(void)
 	return uart_state;
 }
 
+/*
+ * Wait for the TX FIFO to actually drain. uart_raw() returns as soon as the
+ * byte is *in* the FIFO, so a probe that wedges the SoC right after printing
+ * its last line can lose up to `depth` characters of the evidence - exactly
+ * the characters that would have named the step that killed it. Drain before
+ * anything that might not come back.
+ */
+void con_uart_drain(void)
+{
+	if (!uart_state)
+		return;
+	for (int i = 0; i < 2000000; i++)
+		if (!(ureg(SE_GENI_TX_FIFO_STATUS) & TX_FIFO_WC_MSK))
+			return;
+}
+
 static void uart_puts(const char *s)
 {
 	while (*s)
@@ -134,6 +144,28 @@ void con_fill(uint32_t c)
 		con_fb[i] = c;
 }
 
+/* ---- milestone colour bar ----------------------------------------------
+ *
+ * A full-width strip pinned to the bottom of the screen. It is console
+ * state, not shim.c's: the moment the console scrolls, a bar painted by
+ * anybody else would slide up with the text and vanish, and the whole
+ * point of the bar is that the last colour on screen names the last thing
+ * that ran. So the console owns it, repaints it after every scroll and
+ * every clear, and keeps the text rows above it.
+ */
+static uint32_t mark_col = 0xff000000U;	/* opaque black until the first MARK */
+
+void con_mark(uint32_t c)
+{
+	mark_col = c;
+	int y0 = FB_H - MARK_H;
+	for (int y = 0; y < MARK_H; y++) {
+		volatile uint32_t *line = con_fb + (uint32_t)(y0 + y) * (FB_STRIDE / 4);
+		for (int x = 0; x < FB_W; x++)
+			line[x] = c;
+	}
+}
+
 void con_begin(uint32_t bg)
 {
 	con_bg = bg;
@@ -149,7 +181,53 @@ void con_clear(uint32_t bg)
 	}
 	con_bg = bg;
 	row = 0;
+	con_mark(mark_col);		/* a clear must not cost us the milestone */
 	uart_puts("\r\n");
+}
+
+/* ---- scrolling ---------------------------------------------------------
+ *
+ * Without this the cursor just runs off the bottom: `row` keeps counting
+ * past the last visible line, put_char() still paints the glyphs - into
+ * framebuffer rows the panel never scans out - and a probe that prints a
+ * lot (UFS lists every big partition) looks exactly like a probe that
+ * printed nothing. The first UFS build hit precisely this: the GIC section
+ * had already used up the screen by the time test_ufs() started.
+ *
+ * A scroll is one 48-row memmove of the text area, bar excluded. At
+ * 1080x4 that is ~50k stores; with the MMU off every one of them is a
+ * Device store, so it costs milliseconds - and it only ever runs once the
+ * screen is already full, i.e. when the alternative is losing the output.
+ */
+static void scroll_up(void)
+{
+	uint32_t spw = FB_STRIDE / 4;
+	uint32_t *base = (uint32_t *)con_fb;
+	uint32_t *dst = base + (uint32_t)CON_TOP * spw;
+	uint32_t *src = dst + (uint32_t)CH_H * spw;
+	uint32_t n = (uint32_t)(FB_H - MARK_H - CON_TOP - CH_H) * spw;
+	for (uint32_t i = 0; i < n; i++)		/* dst < src, so forward is safe */
+		dst[i] = src[i];
+	uint32_t *bot = base + (uint32_t)(FB_H - MARK_H - CH_H) * spw;
+	for (uint32_t i = 0; i < (uint32_t)CH_H * spw; i++)
+		bot[i] = con_bg;
+}
+
+/*
+ * Make room for the line that is about to be drawn, scrolling the screen if
+ * the cursor has reached the bottom.
+ *
+ * This has to run *before* drawing, not after. Scrolling afterwards moves
+ * the line just printed up a row as well, so a screen that holds 45 lines
+ * shows 44 of them plus a blank - and the last line of every probe, the one
+ * that names the failing step, is the one that gets pushed up and lost.
+ */
+static void row_reserve(void)
+{
+	if (row >= MAX_ROW) {
+		scroll_up();
+		row = MAX_ROW - 1;
+	}
 }
 
 static void put_char(int col, char ch, uint32_t fg)
@@ -158,7 +236,7 @@ static void put_char(int col, char ch, uint32_t fg)
 		ch = '?';
 	const unsigned char *g = font8x16[ch - 0x20];
 	int x0 = MARGIN + col * CH_W, y0 = CON_TOP + row * CH_H;
-	if (x0 + CH_W > FB_W || y0 + CH_H > FB_H)
+	if (x0 + CH_W > FB_W || y0 + CH_H > FB_H - MARK_H)
 		return;
 	for (int gy = 0; gy < 16; gy++)
 		for (int gx = 0; gx < 8; gx++) {
@@ -191,12 +269,14 @@ static void fmt_hex(char *buf, uint64_t v, int digits)
 
 void con_skip(void)
 {
+	row_reserve();
 	row++;
 	uart_puts("\r\n");
 }
 
 void con_str(const char *label, const char *s)
 {
+	row_reserve();
 	put_str(0, label, YELLOW);
 	put_str(LABEL_COLS, s, WHITE);
 	row++;
@@ -213,6 +293,7 @@ void con_hex(const char *label, uint64_t v)
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb)
 {
 	char buf[9];
+	row_reserve();
 	int col = put_str(0, label, YELLOW);
 	col = col < LABEL_COLS ? LABEL_COLS : col + 1;
 	col = put_str(col, a, YELLOW);

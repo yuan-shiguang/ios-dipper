@@ -25,6 +25,22 @@ int main(int argc, char **argv)
 	con_str("PANIC", "sync exception");
 	con_hex("ESR", 0x96000010);
 
+	/*
+	 * Overflow on purpose: print 12 lines more than the screen holds, with
+	 * a milestone bar underneath. A correct console keeps the last MAX_ROW
+	 * lines, keeps the bar exactly where it was, and never paints a glyph
+	 * into it.
+	 */
+	con_clear(BLACK);
+	con_mark(0xff008080U);		/* teal: the UFS milestone colour */
+	for (int i = 0; i < MAX_ROW + 12; i++) {
+		char label[8], val[48];
+		snprintf(label, sizeof label, "L%02d", i);
+		snprintf(val, sizeof val, "line %d - scrolled, still readable", i);
+		con_str(label, val);
+	}
+	con_mark(0xff808080U);		/* grey: last milestone wins */
+
 	FILE *f = fopen(path, "wb");
 	if (!f) {
 		perror(path);

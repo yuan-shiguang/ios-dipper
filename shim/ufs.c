@@ -128,7 +128,18 @@ static uint32_t scsi(uint8_t lun, const uint8_t *cdb, unsigned cdb_len, void *bu
 	}
 	__asm__ volatile("dsb sy" ::: "memory");
 	*ocs_out = utrl[0].dw2 & 0xff;
-	*status_out = ucd.resp[7];		/* SCSI status in the response UPIU */
+	/*
+	 * Two independent failure words in the response UPIU, and the XNU
+	 * driver (xnu/patches/0028, validated on sweet hardware) checks both:
+	 *   resp[6] - the UPIU response code (0x00 = TARGET_SUCCESS)
+	 *   resp[7] - the SCSI status
+	 * A command can fail at the UPIU level while the SCSI status still
+	 * reads 0, so looking at resp[7] alone reports a failure as success.
+	 */
+	*status_out = ucd.resp[6] << 8 | ucd.resp[7];
+	/* The controller latches the completion in IS; leave it clean, as
+	 * ufshcd does, so a later command does not inherit a stale status. */
+	ufs_wr(REG_IS, ufs_rd(REG_IS));
 	if (*ocs_out)
 		return 2;
 	if (ucd.resp[0] != 0x21)		/* RESPONSE UPIU */
@@ -234,21 +245,21 @@ void test_ufs(void)
 	/* A first command may report a unit attention; retry a few times. */
 	for (int i = 0; i < 3; i++) {
 		rc = scsi(0, tur, sizeof(tur), 0, 0, &ocs, &st);
-		con_hex2("UFS TUR", "rc=", rc, "ocs/st=", ocs << 8 | st);
+		con_hex2("UFS TUR", "rc=", rc, "ocs/r/s=", ocs << 16 | st);
 		if (!rc)
 			break;
 	}
 
 	static const uint8_t cap10[10] = { 0x25 };	/* READ CAPACITY(10) */
 	rc = scsi(0, cap10, sizeof(cap10), data, 8, &ocs, &st);
-	con_hex2("UFS CAP", "rc=", rc, "ocs/st=", ocs << 8 | st);
+	con_hex2("UFS CAP", "rc=", rc, "ocs/r/s=", ocs << 16 | st);
 	if (!rc)
 		con_hex2("UFS LUN0", "lastlba=", be32(data), "blk=", be32(data + 4));
 
 	/* READ(10) LBA 0, 2 blocks: protective MBR and the GPT header. */
 	static const uint8_t rd10[10] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 2, 0 };
 	rc = scsi(0, rd10, sizeof(rd10), data, 2 * BLOCK, &ocs, &st);
-	con_hex2("UFS READ", "rc=", rc, "ocs/st=", ocs << 8 | st);
+	con_hex2("UFS READ", "rc=", rc, "ocs/r/s=", ocs << 16 | st);
 	if (rc)
 		return;
 	con_hex2("UFS MBR", "sig=", data[510] | data[511] << 8, "type=", data[450]);
