@@ -267,6 +267,46 @@ its GDSC and clocks on first). A silent black screen with no fastboot return
 means the code runs and only the UART (`0xa84000`, back cover off) can say
 anything.
 
+**The GIC images were probably never the problem - `fastboot boot` is
+(2026-10-23 22:45).** Three GIC images in a row ("卡fb", "没有色条", "卡fb")
+with a byte-level forensics pass that clears every one of them:
+
+| image | kernel_size | gzip | total | kernel field | result |
+|---|---|---|---|---|---|
+| `shim-boot-dipper-smp.img` | 30 363 167 | 8 048 | 30 371 840 | 7413 pages | BOOTS |
+| `shim-pad4k-dipper.img` | 30 367 309 | 12 190 | 30 375 936 | 7414 pages | BOOTS |
+| `shim-gicv3-dipper.img` | 30 364 515 | 9 396 | 30 375 936 | 7414 pages | "卡fb" |
+
+- **Header**: `shim/hdr.py` compares all 14 header fields plus every raw byte of
+  the first page. `shim-gicv3` differs from the known-good image in bytes
+  [8,9] (kernel_size LSB) and [576..595] (the SHA-1 `id`) - **exactly the same
+  two groups as `shim-pad4k`, which boots.** Page size, all four addresses,
+  ramdisk, header version, os_version, name, cmdline all identical.
+- **ELF layout**: `nm -n` gives `_bss_end 0x1d000`, `_sec_stacks/_stack_top
+  0x25000`, `_alt_entry 0x80000`, `_end 0x81000` - identical to the good build.
+  Only `.text` moved, and every `.bss` object sits at the same address.
+- **DTB tail**: 30 355 119 bytes, same `dtbs.bin`, same 65 trees.
+- The magenta bar is drawn a handful of instructions after `con_clear()`, long
+  before `test_gic()` is even reached, so no GIC bug can suppress it.
+
+And `fastboot boot` is *provably* unusable on dipper: the user ran it against
+`shim-gicmark-dipper.img`, `shim-pad4k-dipper.img` **and the reference
+project's own `uefi.img`** and all three returned
+`Failed to load/authenticate boot image: 00000050`. When it fails the phone
+stays in fastboot - black screen, no output, no colour bar. That is precisely
+"卡fb". `shim-pad4k` booted only because it was flashed with
+`fastboot flash boot ... && fastboot reboot`.
+
+**So: use `shim\flash-boot.cmd <image>` (or the two commands by hand). Never
+`fastboot boot`.** If a future image really does die inside the shim, the
+screen will show console text or a colour bar first - a phone that is simply
+sitting in the fastboot UI has not run anything.
+
+**New tools (2026-10-23 22:45).** `shim/hdr.py` (all header fields + raw page
+diff) and `shim/anatomy.py` (splits an image into header / gzip stream / DTB
+tail / ramdisk and diffs each part) are what produced the table above.
+`shim/diffimg.py` decompresses two images and diffs the resulting `Image`.
+
 **What edk2-dipper actually does (2026-10-23 22:30) - and what we got wrong.**
 The reference port carries **no GIC driver of its own**. It binds ArmGicLib /
 ArmGicArchLib to edk2's `ArmPkg/Drivers/ArmGic` and fills the addresses in as
