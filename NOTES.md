@@ -267,6 +267,72 @@ its GDSC and clocks on first). A silent black screen with no fastboot return
 means the code runs and only the UART (`0xa84000`, back cover off) can say
 anything.
 
+**GICv3 + VIRTUAL TIMER INTERRUPT DELIVERY: FULLY PROVEN ON HARDWARE
+(2026-10-23 23:13, user photo).** The `SHIM_GIC_IRQ=1` image ran and the
+console reported, in order:
+
+```
+EL      cur=00000004 sctlr=00C00000        <- EL1, MMU off (identity map)
+CPU     midr=517F003C mpidr=81000000       <- Qualcomm, Aff2=0x80 Aff1=0 Aff0=0
+PFR     pfr0=11111222 gic=00000001         <- ID_AA64PFR0.GIC = 1: GICv3 sysreg
+GICD    iidr=0200243B typer=007B0410       <- GIC-500-like, 544 INTIDs, 1 CPU
+SRE     was=00000001 now=00000001          <- EL3 already enabled the sysreg iface
+ARE     was=00000010 ds=00000000           <- ARE_S=1 ARE_NS=0, security live
+GICR    <base> typer=00000001 aff=00000000 <- PLPIS=1 VLPIS=0 -> 128KB frames,
+                                               affinity 0 == MPIDR-derived want
+GICR    waker=00000000 ctlr=00000000       <- redistributor already awake
+ENABLE  was=00000000 now=00080000          <- bit 19: virtual timer armed
+GICR    group=00000000 prio19=000000A0
+VTIMER  ctl=00000002 istatus=00000000      <- masked on purpose
+ICC     ctlr=00000440 pmr=000000F0 bpr1=00000007 grpen1=00000001
+ICC     hppir=000003FF rpr=000000FF
+CTLR    was=00000010 write=00000012
+GICD    now=00000012 rwp=00000000          <- EnableGrp1 on
+pre     pend=10080000 act=00000000         <- ISPENDR0 bit 19: timer PENDING
+pre     isr=00000000 hppi=00000013         <- HPPIR1 = INTID 19
+pre     tctl=00000005 last=00000013        <- irq_handler ran, IAR1 returned 19
+```
+
+`last=00000013` is the proof that matters: `irq_handler()` executed, read
+`ICC_IAR1_EL1` and got **19**, the virtual timer INTID. `act=00000000` shows it
+was deactivated cleanly, and `hppi=00000013` shows the GIC itself reporting
+INTID 19 as the highest-priority pending Group 1 interrupt. Delivered,
+acknowledged, handled.
+
+**Two writes that are ignored, and why they must stay that way.** With
+`GICD_CTLR.DS = 0` this GIC has a live secure state, so the security and
+routing configuration belongs to EL3:
+
+- `GICD_CTLR.ARE_NS` (bit 5): we write 0x30, it reads back 0x10. EL3 owns it;
+  EDK2 gets away with the same write only because its DXE runs at EL2.
+  Affinity routing works regardless - `find_gicr()` matched by
+  `GICR_TYPER.Affinity`, and INTID 19 was delivered.
+- `GICR_IGROUPR0`: we write 0xffffffff, it reads back 0. **This one is a trap,
+  not a curiosity.** Had the write taken, all 32 SGIs/PPIs would have moved
+  out of Group 0 and the virtual timer would have stopped being an IRQ. EL3
+  already has the groups right - `ICC_IAR1_EL1` only ever returns Group 1, and
+  it returned 19.
+
+Both writes are now gone from `test_gic()`; both registers are still read, for
+the record. Everything the shim actually needs to do - wake its own
+redistributor, set priorities, enable INTID 19, program
+`ICC_PMR/BPR1/EOImode/IGRPEN1`, enable `GICD.CTLR` Group 1 - is unaffected.
+
+**Other facts worth carrying into the XNU port:**
+- `CNTFRQ_EL0` = 19 200 000 (19.2 MHz), matching `dipper.dts`
+  `clock-frequency = <0x124f800>`. A 10 ms tick is `CNTV_TVAL_EL0 = 192000`.
+- `PSCI_VERSION` = 0x01000001 (PSCI 1.1), `SMCCC_VERSION` = 0x00010002 (1.2).
+- All seven secondaries came up: `CPU1..CPU7 ret=00000000 mpidr=8100nn00`.
+- `GICR_TYPER.PLPIS=1, VLPIS=0` -> 128 KB redistributor granularity, i.e. two
+  64 KB frames, so the SGI/PPI frame really is at `+0x10000`. Our
+  `GICR_SGI` was right all along, confirmed by the ISENABLER0 and IPRIORITYR
+  round-trips at `r + 0x10100` and `r + 0x10400`.
+- `GICD_IIDR = 0x0200243B` is a GIC-500-family value.
+
+**Rebuilt:** `shim/out/shim-gicirq-dipper.img` (md5
+`21e54e622eb75c0f08984e2ed7f4b19e`, FLG `0x00`) is the same probe with the two
+ignored writes removed.
+
 **GICv3 PROVEN ON HARDWARE (2026-10-23 23:05).** The rewritten `test_gic()`
 reached the **grey** milestone bar, which is the last of the eleven - so every
 step completed: EL1 sysregs, GICD decode at `0x17a00000`, sysreg interface

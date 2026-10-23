@@ -530,22 +530,28 @@ static void __attribute__((unused)) test_gic(void)
 	MARK(0xffff8000U);		/* orange: sysreg interface live */
 
 	/*
-	 * 3. Affinity routing. ArmGicV3Dxe.c:807 is the whole justification:
-	 *    "We will be driving this GIC in native v3 mode, i.e., with
-	 *    Affinity Routing enabled. So ensure that the ARE bit is set."
-	 *    ARE_NS, bit 5, and nothing else - no Group 0, no Group 1 yet.
-	 *    Those come at the end, because a distributor that is already
-	 *    delivering Group 0 while we are still rewriting its routing is a
-	 *    hang nobody can diagnose.
+	 * 3. Read the distributor's control register - and deliberately do NOT
+	 *    write it here.
+	 *
+	 *    The previous version of this probe ORed ARE_NS (bit 5) into
+	 *    GICD_CTLR, copying ArmGicV3Dxe.c:807 ("we will be driving this GIC
+	 *    in native v3 mode, i.e., with Affinity Routing enabled. So ensure
+	 *    that the ARE bit is set"). On hardware the write is simply ignored:
+	 *    we wrote 0x30 and it read back 0x10. That is not a bug in us -
+	 *    GICD_CTLR.DS reads 0, so this GIC has a live secure state and the
+	 *    security/routing configuration belongs to EL3, which has already
+	 *    set ARE_S and left ARE_NS alone. EDK2 gets away with the same write
+	 *    because its DXE runs at EL2, one level higher than we do.
+	 *
+	 *    Affinity routing demonstrably works anyway: find_gicr() matched
+	 *    this core's redistributor by GICR_TYPER.Affinity, and INTID 19 was
+	 *    delivered and acknowledged. So the register is read here purely for
+	 *    the record, and Group 1 is enabled once at the very end - which is
+	 *    all ArmGicEnableDistributor() does after ARE is set.
 	 */
 	stage = "gic are";
 	uint32_t dctlr = rd32(GICD_BASE);
-	uint32_t are = dctlr | (1U << 5);		/* ARE_NS */
-	con_hex2("ARE", "was=", dctlr, "write=", are);
-	wr32(GICD_BASE, are);
-	isb();
-	con_hex2("ARE", "now=", rd32(GICD_BASE), "ds=",
-		 (rd32(GICD_BASE) >> 6) & 1);
+	con_hex2("ARE", "was=", dctlr, "ds=", (dctlr >> 6) & 1);
 	MARK(0xffff0000U);		/* red: affinity routing enabled */
 
 	/*
@@ -563,7 +569,7 @@ static void __attribute__((unused)) test_gic(void)
 		return;
 	}
 	con_hex("GICR", (uint64_t)r);
-	con_hex2("GICR", "typer=", (uint32_t)rd64(r + GICR_TYPER), "lo=",
+	con_hex2("GICR", "typer=", (uint32_t)rd64(r + GICR_TYPER), "aff=",
 		 (uint32_t)(rd64(r + GICR_TYPER) >> 32));
 	MARK(0xffffffffU);		/* white: redistributor matched by affinity */
 
@@ -587,9 +593,14 @@ static void __attribute__((unused)) test_gic(void)
 	/*
 	 * 6. SGI/PPI frame: everything Group 1, priorities down, and the one
 	 *    source we actually want armed. edk2 reaches the same "all Group 1"
-	 *    state through GICR_ICDISR when it sees GICD_CTLR.DS set
-	 *    (ArmGicV3Dxe.c:838); GICR_IGROUPR0 is the redistributor's own group
-	 *    register for INTIDs 0-31 and does the same job from here.
+	 *    The group registers are NOT touched. The previous version wrote
+	 *    0xffffffff to GICR_IGROUPR0, meaning "all 32 SGIs/PPIs are not
+	 *    Group 0". On hardware that write is ignored too, and it has to stay
+	 *    that way: had it taken, every SGI and PPI would have moved out of
+	 *    Group 0 and the virtual timer would have stopped being an IRQ.
+	 *    EL3 already has the groups right - INTID 19 was delivered through
+	 *    ICC_IAR1_EL1, which only ever returns Group 1 - so we read
+	 *    IGROUPR0 for the record and leave the configuration alone.
 	 *
 	 *    Only the virtual timer is enabled. The old code also armed INTID 18
 	 *    and SGI 1; neither is needed to prove the GIC, and every extra
@@ -598,7 +609,6 @@ static void __attribute__((unused)) test_gic(void)
 	 */
 	stage = "gic config";
 	uint32_t en_before = rd32(r + GICR_ISENABLER0);
-	wr32(r + GICR_IGROUPR0, 0xffffffff);
 	for (int id = 0; id < 32; id++)
 		wr8(r + GICR_IPRIORITYR + id, 0xa0);
 	wr32(r + GICR_ISENABLER0, 1U << VTIMER_INTID);
@@ -611,14 +621,13 @@ static void __attribute__((unused)) test_gic(void)
 	 * 7. Mask the virtual timer before opening the door.
 	 *
 	 *    ICC_IGRPEN1 = 1 with CNTV_CTL_EL0.IMASK clear and the counter
-	 *    already past CNTV_CVAL_EL0 takes the interrupt on the next
-	 *    instruction boundary. Our vectors have no IRQ handler yet, so that
-	 *    lands in the panic screen - which tells us nothing about the GIC
-	 *    and would be indistinguishable from a GIC fault. The reference's
-	 *    TimerDxe programs the counter first and only then enables the
-	 *    source; we have no timer programme in this probe, so we keep the
-	 *    source masked and leave arming it to the step that sets a compare
-	 *    value.
+	 *    already past CNTV_CVAL_EL0 takes the interrupt immediately. The
+	 *    handler is wired and proven - slot 5 of the vector table reaches
+	 *    irq_handler(), and the 23:09 image showed it working, IAR1
+	 *    returning 19 - but a probe that is mid-way through printing its own
+	 *    results is not the place to be taking interrupts, and an unexpected
+	 *    delivery here would be indistinguishable from a GIC fault.
+	 *    irq_window() unmasks deliberately, later, and re-masks after.
 	 */
 	stage = "gic mask";
 	uint64_t vctl = rsr("cntv_ctl_el0");
