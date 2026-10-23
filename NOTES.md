@@ -267,6 +267,52 @@ its GDSC and clocks on first). A silent black screen with no fastboot return
 means the code runs and only the UART (`0xa84000`, back cover off) can say
 anything.
 
+**ROOT CAUSE of every "卡fb" since 20:04 - it was never the GIC code
+(2026-10-23 23:00).** `tools/mkimage_gz_dtb.py` padded the gzip stream to a
+4-byte multiple by setting `FLG.FCOMMENT` and putting the pad bytes in the
+header. That is legal gzip and zlib round-trips it, which is why the tool's
+own round-trip check never caught it - but **ABL's gunzip does not skip
+optional header fields**, so it read the comment bytes as deflate data and
+refused the kernel. The phone went straight to fastboot with nothing on
+screen.
+
+The correlation is exact across every image ever flashed:
+
+| image | gzip FLG | result |
+|---|---|---|
+| `shim-boot-dipper-smp.img` (19:50) | `0x00` | boots, prints |
+| `shim-pad4k-dipper.img` | `0x00` | boots |
+| `shim-gicmark-dipper.img` | `0x10` | 卡fb |
+| `shim-gictrace-dipper.img` | `0x10` | no colour bar |
+| `shim-gicv3-dipper.img` | `0x10` | 卡fb |
+
+The 19:50 image was pure luck: its deflate body happened to need no padding
+(1-in-4), so its FLG stayed 0. Every GIC build needed padding, so every one of
+them was refused. `shim-pad4k` survived only because `mkpad.py` built its
+gzip with Python's `gzip` module, which never sets FLG. The forensics in the
+previous section were all correct and all irrelevant - header, page count,
+ELF layout and DTB tail really were identical to a booting image, because the
+fault was one byte in the gzip header that none of them looked at.
+
+**The fix** (`tools/mkimage_gz_dtb.py`, rewritten): keep the stream 4-aligned,
+but pad the **Image** with incompressible bytes and recompress, at most a
+handful of tries. No FLG bit is ever set; the tool now asserts `gz[3] == 0`.
+The extra bytes land past the shim's `_end` where nothing reads them - exactly
+what `mkpad.py` has been doing all along, and those images boot.
+
+**Both images rebuilt and re-verified (2026-10-23 23:00):**
+- `shim/out/shim-boot-dipper.img` - built from the `dipper-known-good` tag with
+  the fixed tool. FLG `0x00`, 30 371 840 bytes, and **5 differing bytes from
+  `shim-boot-dipper-smp.img`, all inside `__TIME__`**. md5
+  `ded3a623fe1a34e60935d706fa232ecf`.
+- `shim/out/shim-gicv3-dipper.img` - the borrowed-sequence GIC probe. FLG
+  `0x00`, 30 375 936 bytes, `orr w28, w2, #0x20` (ARE_NS) still present, 11
+  colour-bar call sites. md5 `4eddc2285e1bd00fedafdc9c0d877f46`.
+
+**If the GIC image still fails after this, the bar will at least be visible** -
+and the colour will name the step. A phone sitting silently in the fastboot UI
+has not run anything, which is what all three of these were.
+
 **The GIC images were probably never the problem - `fastboot boot` is
 (2026-10-23 22:45).** Three GIC images in a row ("卡fb", "没有色条", "卡fb")
 with a byte-level forensics pass that clears every one of them:
