@@ -86,11 +86,19 @@
 #define BOARD_NR_CPUS		8
 #define BOARD_TIMEBASE_HZ	19200000UL
 
-/* SDM845: 4x Cortex-A55 in cluster 0 (MPIDR 0x000..0x003) and 4x Cortex-A75 in
- * cluster 1 (MPIDR 0x100..0x103). PSCI CPU_ON takes the full MPIDR, so core i
- * is at ((i >> 2) << 8) | (i & 3) - NOT sweet's i << 8. */
-#define BOARD_CPU_ON_MPIDR(i)	((((((uint64_t)(i)) >> 2) & 0xff) << 8) | \
-				 (((uint64_t)(i)) & 0x3))
+/*
+ * MPIDR of CPU i, straight from the device tree: cpu@0..cpu@7 carry
+ * reg = <0x00 0x000>, <0x00 0x100>, ... <0x00 0x700>, so the core index sits
+ * in Aff1 and Aff0 is 0 for every core - the same one-core-per-Aff1 layout
+ * sweet uses, *not* the 4+4 cluster map this file used to assume for SDM845.
+ *
+ * Measured (2026-10-23, first console boot): with ((i>>2)<<8)|(i&3) the
+ * replies were 0x81000200 / 0x81000100 / 0x81000300 for contexts 2 / 5 / 7 -
+ * cpu2, cpu1, cpu3 - while cpu4..cpu7 never came up and three contexts
+ * returned -5 (ON_PENDING) because they had asked for a core that was already
+ * being turned on. Pass the DT value, exactly like Linux does.
+ */
+#define BOARD_CPU_ON_MPIDR(i)	(((uint64_t)(i)) << 8)
 
 /* sdm845.dtsi: qcom,msm-imem@146bf000, restart_reason@65c -> 0x146bf65c.
  * (0x146aa65c is the SM7150 imem window sweet uses; on dipper it lands outside

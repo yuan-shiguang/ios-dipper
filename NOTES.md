@@ -92,10 +92,38 @@ is reached from WSL at `/mnt/d/ios-dipper`, but compiling there is slow enough
 to look like a hang; `cp -r` the tree to `~/dbuild` and build there, then copy
 `shim/out/*.img` back. Windows checkouts get CRLF - `.gitattributes` pins LF.
 
-**Still unknown (needs the phone):** the real row pitch (the probe answers it);
-whether SDE keeps scanning the splash buffer after the first frame; the MPIDR
-of the A75s; UFS on SDM845. A silent black screen with no fastboot return means
-the code runs and only the UART (`0xa84000`, back cover off) can say anything.
+**Console works (2026-10-23 18:32, hardware).** The stripped image boots to a
+full console dump and `HOLD`s. What it reports:
+
+```
+FB base=9D400000 stride=000010E0   w=00000438 h=000008C8
+DTB 00000000853FD000  magic=D00DFEED cpu=81000000
+TIMER frq=0124F800 cnt=...         (19.2 MHz XO, counting)
+PSCI ver=00010001 smccc=00010002   (PSCI 1.1 / SMCCC 1.2)
+INITRD lo=855FE000 hi=855FE05E     (the 94-byte ramdisk we packed)
+LOADER no SWEETXNU payload
+```
+
+So: framebuffer base and pitch confirmed, ABL hands over a valid FDT at
+`0x853FD000` with the ramdisk, PSCI 1.1 is available, the 19.2 MHz counter
+runs. What was actually wrong before was the paint path, not ABL: the 36 MB
+`con_fill`, the 400 ms delay and the GENI UART probe are all gone from the
+dipper default and the console now comes up in well under a second.
+
+**SMP was wrong, and the DTB says why.** `cpu@0..cpu@7` carry
+`reg = <0x00 0x000>, <0x00 0x100>, ... <0x00 0x700>` - the core index is in
+Aff1 and every core has Aff0 = 0. `board.h` had the 4+4 cluster formula
+`((i>>2)<<8)|(i&3)`, so CPU_ON asked for the wrong affinities: the TZ started
+cpu1/cpu2/cpu3 twice each and reported `0x81000200 / 0x81000100 / 0x81000300`
+for contexts 2/5/7, cpu4..cpu7 never came up, and three contexts returned -5
+(ON_PENDING). Fixed to `BOARD_CPU_ON_MPIDR(i) = i << 8`, the value the DT
+gives, same as sweet and same as Linux.
+
+**Still unknown (needs the phone):** whether all 8 cores now report in; the
+GICv3 base/redistributor layout on SDM845 (`0x17a00000`/`0x17a60000`, still
+untested - `SHIM_GIC=1`); UFS on SDM845 (`0x1d84000`, untested, needs its GDSC
+and clocks on first). A silent black screen with no fastboot return means the
+code runs and only the UART (`0xa84000`, back cover off) can say anything.
 
 ## Agent handoff / active work (2026-10-15, latest)
 
