@@ -51,12 +51,12 @@
 #define BOARD_FB_W		1080
 #define BOARD_FB_H		2248
 /*
- * Row pitch. This is measured, not read from a driver: writing 1088 px rows
- * into a buffer the panel scans 1080 px per row leaves 32 bytes of the
- * previous frame between rows, which showed up as a diagonal blue line and
- * unreadable text. 1080 * 4 = 4320 is the current answer; `pitch_probe()` in
- * shim.c paints the four candidates on one screen so a single boot settles it
- * for good (the straight line wins).
+ * Row pitch, 4320 B. Measured, not read from a driver, and confirmed on the
+ * phone: start.S draws a red column stepping by this pitch before any C runs,
+ * and on hardware it comes out dead straight - so the panel really scans 1080
+ * pixels per row with no 32-pixel alignment. The earlier 1088 (ALIGN(1080,32))
+ * left 32 bytes of the previous frame between rows, which is what turned text
+ * into a diagonal smear.
  */
 #define BOARD_FB_STRIDE		(1080 * 4)
 #define BOARD_FB_BYTES		0x02400000UL	/* the whole carve-out */

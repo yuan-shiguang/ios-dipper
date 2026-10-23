@@ -42,6 +42,16 @@ void con_uart_init(void);
 int con_uart_ok(void);
 
 void con_clear(uint32_t bg);
+
+/*
+ * Set the text background and cursor without touching the framebuffer.
+ * Drawing text straight over whatever the screen already shows is the cheapest
+ * possible proof that C is running: a full clear is millions of uncached
+ * stores, and at the clock ABL leaves the boot core that can outlast the
+ * window before the phone gives up and resets.
+ */
+void con_begin(uint32_t bg);
+
 void con_skip(void);
 void con_str(const char *label, const char *s);
 void con_hex(const char *label, uint64_t v);

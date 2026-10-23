@@ -134,6 +134,12 @@ void con_fill(uint32_t c)
 		con_fb[i] = c;
 }
 
+void con_begin(uint32_t bg)
+{
+	con_bg = bg;
+	row = 0;
+}
+
 void con_clear(uint32_t bg)
 {
 	for (int y = 0; y < FB_H; y++) {

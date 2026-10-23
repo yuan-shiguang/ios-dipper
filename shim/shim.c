@@ -35,6 +35,15 @@
 #ifndef SHIM_MMU
 #define SHIM_MMU	0	/* MMU tests are for the kernel port, not bring-up */
 #endif
+/*
+ * The GENI UART mirror reads 0xa84000, which is exactly the kind of access
+ * that stalls the NoC when the block's clocks are gated - and on dipper the
+ * pads are under the back cover, so nobody is listening anyway. Off unless
+ * asked for.
+ */
+#ifndef SHIM_UART
+#define SHIM_UART	1
+#endif
 
 #define IMEM_RESTART_REASON	BOARD_IMEM_RESTART_REASON
 #define PSHOLD			BOARD_PSHOLD
@@ -119,7 +128,24 @@ static uint64_t now(void)
 
 static void delay_ms(unsigned ms)
 {
-	uint64_t end = now() + rsr("cntfrq_el0") / 1000 * ms;
+	uint64_t frq = rsr("cntfrq_el0");
+
+	/*
+	 * ABL is not obliged to leave a sane CNTFRQ_EL0 behind, and this timer
+	 * is the only thing between a 400 ms delay and an endless one. Anything
+	 * outside the plausible range means "do not wait", not "wait forever".
+	 */
+	if (frq < 1000000ULL || frq > 1000000000ULL)
+		return;
+
+	/* A frozen counter would make the loop below spin for good. */
+	uint64_t a = now();
+	for (int i = 0; i < 4096 && now() == a; i++)
+		;
+	if (now() == a)
+		return;
+
+	uint64_t end = a + frq / 1000 * ms;
 	while (now() < end)
 		;
 }
@@ -313,7 +339,7 @@ static void irq_window(const char *label, uintptr_t r, int src)
 	con_hex2(" pre", "tctl=", ist, "last=", irq_last);
 }
 
-static void test_gic(void)
+static void __attribute__((unused)) test_gic(void)
 {
 	stage = "gic sre";
 	uint64_t sre = rsr("icc_sre_el1");
@@ -448,7 +474,7 @@ static void test_mmu(void)
  * Each candidate gets its own colour, so the answer is "the straight one is
  * green", not "the second from the left".
  */
-static void pitch_probe(void)
+static void __attribute__((unused)) pitch_probe(void)
 {
 	static const uint32_t pitch[4] = { 1080, 1088, 1120, 1152 };
 	static const uint32_t colour[4] = { RED, GREEN, WHITE, ORANGE };
@@ -479,19 +505,38 @@ void shim_main(uint64_t dtb)
 #endif
 
 	/*
-	 * 1. Panel. start.S already put a green bar, a red column and a blue
-	 *    corner on it. Repaint the whole carve-out in a bright colour first:
-	 *    that run is pitch-independent, so if the screen stays black here
-	 *    the problem is above us (SDE not scanning / wrong base), not in any
-	 *    stride arithmetic.
+	 * 0. Prove the C half runs, in the cheapest way there is.
+	 *
+	 * The asm beacon already showed that ABL jumps and that the framebuffer
+	 * is writable at 0x9d400000 with pitch 1080 (its red column comes out
+	 * dead straight). What is still unproven is everything after `bl
+	 * shim_main`: so the very first console call draws four glyphs straight
+	 * over whatever is on screen - a few thousand stores, no clear, no
+	 * delay. If this line does not appear, nothing after it can be trusted.
 	 */
+	stage = "alive";
+	con_begin(BLACK);
+	con_str("SHIM", "alive");
+
+	/*
+	 * 1. Panel.
+	 *
+	 * The whole-carve-out fill (~9.4M uncached stores) and the 400 ms delay
+	 * were there to prove the panel scans our buffer when the pitch was
+	 * unknown. Both are now known, and both cost time that ABL does not
+	 * necessarily give us before it decides the boot has failed. Keep them
+	 * behind a flag for the next board that has to rediscover its pitch.
+	 */
+#ifdef SHIM_SLOW_PAINT
 	stage = "fb fill";
 	con_fill(0xff003060U);		/* deep blue, obviously not "black" */
 	delay_ms(400);
-
+#endif
 	stage = "fb console";
 	con_clear(BLACK);
+#ifdef SHIM_PITCH_PROBE
 	pitch_probe();
+#endif
 	con_str("SHIM", BOARD_NAME " " BOARD_SOC " boot shim");
 	con_hex2("FB", "base=", (uint32_t)FB_BASE, "stride=", FB_STRIDE);
 	con_hex2("FB", "w=", FB_W, "h=", FB_H);
@@ -528,10 +573,12 @@ void shim_main(uint64_t dtb)
 	/* 6. Serial mirror. Late on purpose: reading SE_HW_PARAM_0 on a gated
 	 *    GENI can hang the NoC, and by now the panel already says where we
 	 *    got to. Everything printed above is replayed here. */
+#if SHIM_UART
 	stage = "uart";
 	con_uart_init();
 	con_str("UART", con_uart_ok() ? "mirror on (115200 8N1)" : "no mirror");
 	con_skip();
+#endif
 
 	/* 7. Storage, the probe most likely to hang. */
 #if SHIM_UFS

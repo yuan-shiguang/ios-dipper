@@ -49,11 +49,35 @@ each other. `con_fill()` (linear, pitch-independent) is what showed as the
 streak.
 
 **Current state:** `BOARD_FB_STRIDE = 1080*4`, `FB_PITCH = 1080` in
-`start.S`, and `pitch_probe()` in `shim.c` paints four 700-row strokes at
-pitches **1080 / 1088 / 1120 / 1152** in **red / green / white / orange**.
-One boot answers it: the straight stroke is the real pitch, the other three
-wrap into dashes. If none is straight, the drift direction says whether the
-real pitch is above or below 1080 and the search widens from there.
+`start.S`. **Confirmed on hardware:** `shim-beacon-dipper.img` (asm only, no C)
+shows the green top bar and a *dead straight* red column, so the panel really
+scans 1080 pixels per row and ABL really jumps. The beacon's blue corner
+square is not visible, most likely hidden by the rounded bottom-right corner
+of the panel - not a problem, the console only uses the top.
+
+**Open bug (2026-10-23 18:24):** `shim-boot-dipper.img` still ends up back in
+fastboot while the beacon image holds its marks, so the fault is between `bl
+shim_main` and the first console output. Three suspects, all now removed from
+the default dipper path:
+
+1. `con_fill()` writes the whole 36 MB carve-out - ~9.4M stores, each one
+   Device-nGnRnE because the MMU is off, at whatever clock ABL left the boot
+   core. If that outlasts the window before the phone decides the boot failed,
+   the screen never changes and it resets to fastboot. The 400 ms `delay_ms`
+   on top of it doubles the exposure, and a junk `CNTFRQ_EL0` could turn it
+   into minutes.
+2. `con_uart_init()` reads `SE_HW_PARAM_0` at `0xa84000`. A gated GENI stalls
+   the NoC instead of returning an error. Off by default now (`SHIM_UART=0`);
+   the pads are under the back cover anyway.
+3. Nothing else touches hardware before the console text.
+
+`delay_ms()` now refuses to trust a `CNTFRQ_EL0` outside 1 MHz..1 GHz and bails
+out if `CNTPCT_EL0` does not advance, so no delay can spin forever.
+`con_begin()` (new) sets the text background without clearing, and `shim_main`
+starts with `con_str("SHIM", "alive")` drawn straight over whatever is on
+screen - a few thousand stores, the cheapest possible proof that C runs.
+`SHIM_SLOW_PAINT` and `SHIM_PITCH_PROBE` re-enable the old fill/delay and the
+four-colour pitch probe for a future board that has to rediscover its pitch.
 
 **Built artefacts (WSL, `BOARD=dipper`):**
 `shim/out/shim-boot-dipper.img` (30 375 936 B, all probes) and
