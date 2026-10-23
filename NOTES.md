@@ -238,6 +238,30 @@ Output stopping after one of the lines above -> that step is the killer, and
 a blue panic screen with `ESR`/`ELR` is even better news, because it names the
 faulting instruction.
 
+**Known-good image restored and confirmed on hardware (2026-10-23 20:45).**
+`shim/out/shim-boot-dipper-smp.img` (md5 `04e788644319d6c8affcdb345a3a9509`,
+BUILD stamp `Oct 23 2026 19:50:49`) boots: `SHIM alive` and `BUILD` both
+appear. This is the `SHIM_SMP=1` build that reported all seven secondaries
+`ret=0 mpidr=81000000+x*100`. It had been "lost" only on the Windows side
+(overwritten by the notch experiment); the copy in `~/dbuild/shim/out/
+shim-boot-notcho.img` was intact.
+
+**The default image was never broken - proved byte for byte.** Decompressing
+both the known-good image and the 20:23 default build gives two 528 384-byte
+Images that differ in **6 bytes**, all inside the `__TIME__` string
+(`19:50:49` vs `20:23:38`). The instrumented `test_gic` is eliminated by the
+optimizer under `SHIM_GIC=0`, and reverting `CON_TOP` made `console.c` emit
+identical code. So a "straight to fastboot" report on the default image was
+never a code fault - it was the flash/reboot procedure (the recurring false
+alarm), not the shim.
+
+**GitHub now holds the work (2026-10-23 20:44).** `origin/main` had only the
+`067c9b3` MIT-license baseline; all 16 local commits were pushed as a
+fast-forward (`067c9b3..9a9f028`). The verified source state is tagged
+**`dipper-known-good`**. Note that `ff1644c` (19:16, the state
+`shim/build.sh`'s mtime points at) must NOT be checked out: its `SHIM_SMP=1`
+still means AFFINITY_INFO-only, which resets the phone.
+
 **Still unknown (needs the phone):** UFS on SDM845 (`0x1d84000`, untested, needs
 its GDSC and clocks on first). A silent black screen with no fastboot return
 means the code runs and only the UART (`0xa84000`, back cover off) can say
