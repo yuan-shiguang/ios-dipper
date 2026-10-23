@@ -437,6 +437,34 @@ static void test_mmu(void)
 
 /* ---- main ---- */
 
+/*
+ * Row-pitch probe: four candidates, four tall vertical strokes, one screen.
+ *
+ * A stroke drawn with the right pitch is dead vertical. A stroke drawn with
+ * the wrong one walks (pitch_written - pitch_real) pixels sideways per row,
+ * so over 700 rows an 8-pixel error moves it 5600 pixels and it wraps around
+ * into a string of diagonal dashes - unmistakable next to a straight one.
+ *
+ * Each candidate gets its own colour, so the answer is "the straight one is
+ * green", not "the second from the left".
+ */
+static void pitch_probe(void)
+{
+	static const uint32_t pitch[4] = { 1080, 1088, 1120, 1152 };
+	static const uint32_t colour[4] = { RED, GREEN, WHITE, ORANGE };
+	const uint32_t y0 = 1400, y1 = 2100;
+
+	for (int i = 0; i < 4; i++) {
+		int x0 = 60 + i * 270;
+
+		for (uint32_t y = y0; y < y1 && y < FB_H; y++) {
+			volatile uint32_t *row = con_fb + y * pitch[i];
+			for (int k = 0; k < 20; k++)
+				row[x0 + k] = colour[i];
+		}
+	}
+}
+
 void shim_main(uint64_t dtb)
 {
 	/*
@@ -452,6 +480,7 @@ void shim_main(uint64_t dtb)
 
 	stage = "fb console";
 	con_clear(BLACK);
+	pitch_probe();
 	con_str("SHIM", BOARD_NAME " " BOARD_SOC " boot shim");
 	con_hex2("FB", "base=", (uint32_t)FB_BASE, "stride=", FB_STRIDE);
 	con_hex2("FB", "w=", FB_W, "h=", FB_H);

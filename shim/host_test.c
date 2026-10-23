@@ -1,4 +1,4 @@
-/* Render the console layout on the host: ./out/host_test && view out/host.ppm
+/* Render the console layout on the host: ./out/host_test out/host.ppm
  *
  * This is how a console change gets checked without a flash: the same
  * console.c, the same font, the same stride arithmetic, but the framebuffer
@@ -10,8 +10,10 @@
 
 static uint32_t host_fb[FB_H * FB_STRIDE / 4];
 
-int main(void)
+int main(int argc, char **argv)
 {
+	const char *path = argc > 1 ? argv[1] : "out/host.ppm";
+
 	con_fb = host_fb;
 	con_clear(RED);
 	con_str("SHIM", BOARD_NAME " " BOARD_SOC " console render");
@@ -23,14 +25,14 @@ int main(void)
 	con_str("PANIC", "sync exception");
 	con_hex("ESR", 0x96000010);
 
-	FILE *f = fopen("out/host.ppm", "wb");
+	FILE *f = fopen(path, "wb");
 	if (!f) {
-		perror("out/host.ppm");
+		perror(path);
 		return 1;
 	}
 	fprintf(f, "P6 %d %d 255\n", FB_W, FB_H);
-	/* Walk by stride: FB_STRIDE is ALIGN(FB_W, 32) * 4, so a panel row is
-	 * wider than FB_W pixels and a flat index would shear the output. */
+	/* Walk by stride: a panel row may be padded past FB_W pixels, and a
+	 * flat index would shear the output. */
 	for (int y = 0; y < FB_H; y++)
 		for (int x = 0; x < FB_W; x++) {
 			uint32_t p = host_fb[y * (FB_STRIDE / 4) + x];

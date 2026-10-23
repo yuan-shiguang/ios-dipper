@@ -50,7 +50,15 @@
 #define BOARD_FB_BASE		0x9d400000UL
 #define BOARD_FB_W		1080
 #define BOARD_FB_H		2248
-#define BOARD_FB_STRIDE		(1088 * 4)	/* ALIGN(1080,32) * 4 */
+/*
+ * Row pitch. This is measured, not read from a driver: writing 1088 px rows
+ * into a buffer the panel scans 1080 px per row leaves 32 bytes of the
+ * previous frame between rows, which showed up as a diagonal blue line and
+ * unreadable text. 1080 * 4 = 4320 is the current answer; `pitch_probe()` in
+ * shim.c paints the four candidates on one screen so a single boot settles it
+ * for good (the straight line wins).
+ */
+#define BOARD_FB_STRIDE		(1080 * 4)
 #define BOARD_FB_BYTES		0x02400000UL	/* the whole carve-out */
 
 /*

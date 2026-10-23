@@ -19,13 +19,13 @@ black screen. The rest of the old image was correct (v1, page 4096, kernel
 **Done this session (D:/ios-dipper, uncommitted at the time of writing):**
 
 - `shim/board.h` new: dipper + sweet blocks (FB `0x9d400000`/1080x2248/stride
-  4352, UART `0xa84000`, imem `0x146bf65c`, MPIDR `((i>>2)<<8)|(i&3)`, header
+  4320, UART `0xa84000`, imem `0x146bf65c`, MPIDR `((i>>2)<<8)|(i&3)`, header
   v1, `BOARD_HOLD_ON_EXIT`).
 - `shim/build.sh` rewritten: `BOARD=`, `DTBS=`, `HEADER_VERSION=`, `OUT=`,
   `SHIM_UFS/SHIM_GIC`; dipper = v1 + `Image.gz-dtb` with the whole 65-tree
   tail; runs `tools/check_bootimg.py` and fails the build on a bad layout.
 - `shim/start.S`: `text_offset 0x80000`; asm beacon (green bar / red column at
-  pitch 1088 / blue corner) before stack, `.bss` or C; no framebuffer reads.
+  pitch 1080 / blue corner) before stack, `.bss` or C; no framebuffer reads.
 - `shim/shim.ld`: `.altentry` at image offset `0x80000` (`b _head`) so the image
   works whether ABL jumps to the load address or to `load + text_offset`.
 - `shim/shim.c`: board constants everywhere, staged probes (panel -> DTB ->
@@ -38,25 +38,40 @@ black screen. The rest of the old image was correct (v1, page 4096, kernel
   `mkimage_gz_dtb.py`, `mkadt_dipper.py`, `mkfakekernel.py` copied in.
 - `dtb/dipper/dtbs.bin` (30 355 119 B) + `dtb/dipper/dtb`, both gitignored.
 
+**First flash result (hardware, 2026-10-23):** `shim-boot-dipper-min.img`
+**boots and paints** - so ABL accepts the v1 image, the 65-tree tail matches,
+and `0x9d400000` really is the scanned buffer. What came up was a black
+background with a ~15 deg blue diagonal streak and unreadable yellow/white
+text: the console was writing 1088-pixel rows (4352 B, `ALIGN(1080,32)*4`) into
+a buffer the panel scans 1080 pixels (4320 B) per row, so every row is displaced
+8 pixels - a vertical stroke becomes a shallow diagonal and glyphs smear into
+each other. `con_fill()` (linear, pitch-independent) is what showed as the
+streak.
+
+**Current state:** `BOARD_FB_STRIDE = 1080*4`, `FB_PITCH = 1080` in
+`start.S`, and `pitch_probe()` in `shim.c` paints four 700-row strokes at
+pitches **1080 / 1088 / 1120 / 1152** in **red / green / white / orange**.
+One boot answers it: the straight stroke is the real pitch, the other three
+wrap into dashes. If none is straight, the drift direction says whether the
+real pitch is above or below 1080 and the search widens from there.
+
 **Built artefacts (WSL, `BOARD=dipper`):**
 `shim/out/shim-boot-dipper.img` (30 375 936 B, all probes) and
 `shim/out/shim-boot-dipper-min.img` (30 371 840 B, `SHIM_UFS=0 SHIM_GIC=0`).
 Both pass `check_bootimg.py` with 65 trees and all 11 dipper board-ids.
-**Not flashed yet** - next action is the minimal image: flash
-`shim/out/shim-boot-dipper-min.img`, reboot, read the panel (three marks, then
-the console, then `HOLD`). It never resets itself; power 10 s to get back to
-fastboot. Rollback is always `fastboot flash boot boot.img` with the stock
-image.
+Flash the minimal one first: it prints the panel / DTB / PSCI / SMP probes and
+then `HOLD`s. It never resets itself; power 10 s to get back to fastboot.
+Rollback is always `fastboot flash boot boot.img` with the stock image.
 
 **Build environment:** the shim must be built on Linux. This Windows checkout
 is reached from WSL at `/mnt/d/ios-dipper`, but compiling there is slow enough
 to look like a hang; `cp -r` the tree to `~/dbuild` and build there, then copy
 `shim/out/*.img` back. Windows checkouts get CRLF - `.gitattributes` pins LF.
 
-**Still unknown (needs the phone):** whether SDE keeps scanning the splash
-buffer at all; whether the pitch really is 4352; the MPIDR of the A75s; UFS on
-SDM845. A silent black screen with no fastboot return means the code runs and
-only the UART (`0xa84000`, back cover off) can say anything.
+**Still unknown (needs the phone):** the real row pitch (the probe answers it);
+whether SDE keeps scanning the splash buffer after the first frame; the MPIDR
+of the A75s; UFS on SDM845. A silent black screen with no fastboot return means
+the code runs and only the UART (`0xa84000`, back cover off) can say anything.
 
 ## Agent handoff / active work (2026-10-15, latest)
 
