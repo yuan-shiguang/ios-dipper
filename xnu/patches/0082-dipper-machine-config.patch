@@ -23,15 +23,16 @@ index 69b13f9..2ed76a3 100644
  
  
  #
-@@ -260,8 +265,9 @@ ifeq ($(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG),)
+@@ -260,8 +265,10 @@ ifeq ($(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG),)
  # Without embdedded device map, use a default arch string
  export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := $(shell echo $(CURRENT_ARCH_CONFIG) | tr A-Z a-z)
  ifneq ($(filter arm64,$(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG)),)
 -# sweet's Cortex-A76/A55 have no pointer authentication: stay plain arm64
 -ifneq ($(CURRENT_MACHINE_CONFIG),SWEET)
 +# sweet's Cortex-A76/A55 and dipper's Cortex-A75/A55 have no pointer
-+# authentication: stay plain arm64
-+ifneq ($(filter SWEET DIPPER,$(CURRENT_MACHINE_CONFIG)),)
++# authentication: stay plain arm64. The guard is inverted on purpose - only
++# configs that are NOT sweet/dipper are upgraded to arm64e.
++ifeq ($(filter SWEET DIPPER,$(CURRENT_MACHINE_CONFIG)),)
  export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
  endif
  endif
