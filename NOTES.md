@@ -959,11 +959,26 @@ would have left a DIPPER build without the staged libpthread/BearSSL/HFS sources
   real `/product` node (`product-name = 'iPhone X'`, `artwork-scale-factor = 0x3`,
   `device-perf-memory-class = 0x4`, `compatible-device-fallback = 'iPhone9,2'`).
 
-### Next
+### Next (exact commands, in order)
 
-1. CI: dispatch `xnu.yml` with `machine_config=DIPPER`; it should build, since the
-   whole sweet series compiles with SWEET still defined.
-2. Boot it with the shim - the loader must hand over `dipper.adt`, not the sweet one.
+1. **CI kernel.** `gh` is not installed in this environment, so dispatch by hand:
+   Actions -> `xnu` -> Run workflow -> `machine_config: DIPPER` (leave the rest at
+   their defaults: macOS 13.5, DEVELOPMENT). It should build - the whole sweet
+   series compiles with SWEET still defined, and nothing in the tree references
+   DIPPER except the new wiring.
+2. **Payload + boot image**, once `kernel.development` is downloaded from the
+   `xnu-kernel` artifact:
+   ```
+   python3 tools/mkpayload.py kernel.development research/ipsw-x/dipper.adt \
+       out/payload-dipper.bin --cmdline "debug=0xc serial=3 cpus=1 keepsyms=1"
+   cd shim && BOARD=dipper ./build.sh ../out/payload-dipper.bin
+   fastboot flash boot out/shim-boot.img && fastboot reboot
+   ```
+   (`shim/build.sh` line 16 already documents the `BOARD=dipper ... payload.bin`
+   form; `mkpayload.py` reads the DRAM window out of the ADT, so `dipper.adt` is
+   what puts the kernel at 0xb0000000.) Start with `cpus=1` - that is what the
+   sweet boots that reached BSD used; switch to `cpus=8` only once single-core
+   boot works, even though the shim proved all eight cores come up via PSCI.
 3. First divergence to expect: the drivers read everything from the ADT, so panel
    geometry (1080x2248) and the GIC/UFS bases should just work; the likely first
    real failure is UFS on hardware (shim milestone 5).
