@@ -37,13 +37,10 @@ GZIP_MAGIC = b"\x1f\x8b"
 # phone. If the tail has none of these, ABL refuses the image before jumping.
 DIPPER_BOARD_IDS = {0x1e, 0x1f, 0x24, 0x25, 0x26, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37}
 
-# Measured from the stock dipper boot.img (MIUI 12 / Android 10, 2020-12) and
-# from the stock sweet boot.img.
+# Measured from the stock dipper boot.img (MIUI 12 / Android 10, 2020-12).
 EXPECT = {
     "dipper": {"header": 1, "kernel_addr": 0x8000, "ramdisk_addr": 0x1000000,
                "tags_addr": 0x100, "page": PAGE, "kernel": "gz-dtb"},
-    "sweet": {"header": 2, "kernel_addr": 0x8000, "ramdisk_addr": 0x1000000,
-              "tags_addr": 0x100, "page": PAGE, "kernel": "image"},
 }
 
 

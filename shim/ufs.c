@@ -14,7 +14,7 @@
 #include "board.h"
 #include "ufs.h"
 
-#define UFS_BASE	BOARD_UFS_BASE	/* ufshc@1d84000 on both sweet and dipper */
+#define UFS_BASE	BOARD_UFS_BASE	/* ufshc@1d84000 on this SoC */
 
 #define REG_CAP		0x00
 #define REG_VER		0x08
@@ -130,7 +130,7 @@ static uint32_t scsi(uint8_t lun, const uint8_t *cdb, unsigned cdb_len, void *bu
 	*ocs_out = utrl[0].dw2 & 0xff;
 	/*
 	 * Two independent failure words in the response UPIU, and the XNU
-	 * driver (xnu/patches/0028, validated on sweet hardware) checks both:
+	 * driver (xnu/patches/0028) checks both:
 	 *   resp[6] - the UPIU response code (0x00 = TARGET_SUCCESS)
 	 *   resp[7] - the SCSI status
 	 * A command can fail at the UPIU level while the SCSI status still

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the SWEET iOS root: one case-sensitive HFS+ image holding an iOS OS
+# Build the DIPPER iOS root: one case-sensitive HFS+ image holding an iOS OS
 # root filesystem plus its cryptexes, for the userdata partition (rd=ufsroot0).
 #
 #   mkiosroot.sh OS.dmg SYSTEMOS.dmg APPOS.dmg OUT.img [SIZE]     (SIZE default 16G)
@@ -11,7 +11,7 @@
 # Owners, modes, symlinks and hard links are preserved (rsync -aH as root).
 #
 # The volume is journaled (XNU replays the journal after a panic; Linux only
-# mounts it read-write with -o force and leaves the journal empty). SWEET
+# mounts it read-write with -o force and leaves the journal empty). DIPPER
 # additions: /System/Library/Caches/com.apple.dyld hard-links the SystemOS
 # cryptex shared cache (ignition_level=1 looks there), and
 # /private/var/keybags/systembag.kb is the plain-plist system keybag that

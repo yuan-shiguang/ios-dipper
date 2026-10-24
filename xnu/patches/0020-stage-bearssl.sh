@@ -1,12 +1,16 @@
 #!/bin/bash
-# Pinned, portable constant-time AES for the SWEET legacy CBC/ECB API.
+# Pinned, portable constant-time AES for the DIPPER legacy CBC/ECB API.
 set -euo pipefail
-[[ "${MACHINE_CONFIG:-}" == SWEET || "${MACHINE_CONFIG:-}" == DIPPER ]] || exit 0
+[[ "${MACHINE_CONFIG:-}" == DIPPER ]] || exit 0
 [[ -f libkern/crypto/corecrypto_aes.c ]] || exit 1
 bearssl_sha=7bea48e5e850ab4cafbe68d3765cdaba13a86d6f
 bearssl_tmp=$(mktemp -d)
 trap 'rm -rf "$bearssl_tmp"' EXIT
-git init -q "$bearssl_tmp"
+# autocrlf=false: a Windows global config would rewrite the staged sources to
+# CRLF and every later patch that touches them would fail to apply.
+git -c core.autocrlf=false init -q "$bearssl_tmp"
+# persist it: -c only covers the single command, the fetch/checkout below need it too
+git -C "$bearssl_tmp" config core.autocrlf false
 git -C "$bearssl_tmp" fetch -q --depth 1 \
     https://www.bearssl.org/git/BearSSL "$bearssl_sha"
 git -C "$bearssl_tmp" checkout -q FETCH_HEAD
@@ -17,7 +21,7 @@ import shutil
 import sys
 
 source = Path(sys.argv[1])
-target = Path('libkern/crypto/sweet_bearssl')
+target = Path('libkern/crypto/dipper_bearssl')
 if target.exists():
     raise SystemExit(f'refusing to overwrite existing AES source: {target}')
 shutil.copytree(source / 'inc', target / 'inc')
@@ -25,12 +29,14 @@ shutil.copytree(source / 'inc', target / 'inc')
 for file in ('inner.h', 'config.h'):
     shutil.copy2(source / 'src' / file, target / 'src' / file)
 # XNU exports machine/limits.h instead of the userspace limits.h.
+# newline='' keeps LF: on Windows the default text mode would rewrite every
+# newline as CRLF and the later patches touching this file would not apply.
 header = target / 'src/inner.h'
 text = header.read_text()
 assert text.count('#include <limits.h>') == 1
 header.write_text(text.replace('#include <limits.h>',
     '#if defined(KERNEL)\n#include <machine/limits.h>\n'
-    '#else\n#include <limits.h>\n#endif'))
+    '#else\n#include <limits.h>\n#endif'), newline='')
 for name in ('aes_ct', 'aes_ct_enc', 'aes_ct_dec', 'aes_ct_cbcenc', 'aes_ct_cbcdec'):
     shutil.copy2(source / 'src/symcipher' / (name + '.c'),
                  target / 'src/symcipher' / (name + '.c'))

@@ -1,0 +1,23 @@
+--- a/iokit/Kernel/arm/DipperCPU.cpp
++++ b/iokit/Kernel/arm/DipperCPU.cpp
+@@ -73,7 +73,8 @@
+ 	if (*(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id) {
+ 		return false;
+ 	}
+-	if (cpu->phys_id > 0x500 || (cpu->phys_id & 0xff) != 0 ||
++	/* MPIDR Aff1 = core index 0x000-0x700 (four A75 + four A55) */
++	if (cpu->phys_id > 0x700 || (cpu->phys_id & 0xff) != 0 ||
+ 	    topology->num_cpus > DIPPER_SMP_MAX_CPUS) {
+ 		panic("DIPPER CPU: invalid topology cpu=%u mpidr=0x%x count=%u",
+ 		    cpu->cpu_id, cpu->phys_id, topology->num_cpus);
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -955,7 +955,7 @@
+ 	const boolean_t cpumask_boot_arg_present = PE_parse_boot_argn("cpumask", &cpumask_boot_arg, sizeof(cpumask_boot_arg));
+
+ #if defined(DIPPER)
+-	/* Opt in to SMP: cpus=N is clamped to DIPPER_SMP_MAX_CPUS. */
++	/* Opt in to SMP: cpus=N (N <= DIPPER_SMP_MAX_CPUS, all eight cores). */
+ 	if (!cpus_boot_arg_present || cpu_boot_arg == 0) {
+ 		cpu_boot_arg = 1;
+ 	}

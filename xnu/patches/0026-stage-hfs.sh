@@ -1,11 +1,11 @@
 #!/bin/bash
-# Stage Apple's open source HFS for the SWEET built-in filesystem (bsd/sweet_hfs).
+# Stage Apple's open source HFS for the DIPPER built-in filesystem (bsd/dipper_hfs).
 # dxb runs patches/*.sh from the XNU source root before applying *.patch.
 set -euo pipefail
 
-[[ "${MACHINE_CONFIG:-}" == SWEET || "${MACHINE_CONFIG:-}" == DIPPER ]] || exit 0
+[[ "${MACHINE_CONFIG:-}" == DIPPER ]] || exit 0
 [[ "${MACOS_VERSION:-}" == 13.5 ]] || {
-    echo 'SWEET/DIPPER HFS integration requires xnu-8796.141.3 (macOS 13.5)' >&2
+    echo 'DIPPER/DIPPER HFS integration requires xnu-8796.141.3 (macOS 13.5)' >&2
     exit 1
 }
 [[ -f bsd/kern/bsd_init.c ]] || exit 1
@@ -15,7 +15,11 @@ set -euo pipefail
 hfs_sha=31d5ec238dfab485e78a9a30b8b92d13e8914f03
 hfs_tmp=$(mktemp -d)
 trap 'rm -rf "$hfs_tmp"' EXIT
-git init -q "$hfs_tmp"
+# autocrlf=false: a Windows global config would rewrite the staged sources to
+# CRLF and every later patch that touches them would fail to apply.
+git -c core.autocrlf=false init -q "$hfs_tmp"
+# persist it: -c only covers the single command, the fetch/checkout below need it too
+git -C "$hfs_tmp" config core.autocrlf false
 git -C "$hfs_tmp" fetch -q --depth 1 \
     https://github.com/apple-oss-distributions/hfs "$hfs_sha"
 git -C "$hfs_tmp" checkout -q FETCH_HEAD
@@ -27,15 +31,15 @@ import shutil
 import sys
 
 source = Path(sys.argv[1])
-target = Path('bsd/sweet_hfs')
+target = Path('bsd/dipper_hfs')
 if target.exists():
     raise SystemExit(f'refusing to overwrite existing HFS sources: {target}')
 # Preserve upstream copyright/license headers; no downloaded sources in git.
 for directory in ('core', 'hfs_encodings'):
     shutil.copytree(source / directory, target / directory)
 
-# SWEET has no AppleKeyStore (content protection is not built, see
-# sweet_hfs_compat.h); its header is only needed for the key-wrapping API.
+# DIPPER has no AppleKeyStore (content protection is not built, see
+# dipper_hfs_compat.h); its header is only needed for the key-wrapping API.
 path = target / 'core' / 'hfs_iokit.h'
 text = path.read_text()
 include = '#include <AppleKeyStore/AppleKeyStoreFSServices.h>\n'
@@ -46,10 +50,18 @@ if text.count(include) != 1 or text.count(first) != 1 or text.count(end) != 1:
 text = text.replace(include, '#if CONFIG_PROTECT\n' + include + '#endif\n')
 i, j = text.index(first), text.index(end)
 text = text[:i] + '#if CONFIG_PROTECT\n' + text[i:j].rstrip('\n') + '\n#endif\n\n' + text[j:]
-path.write_text(text)
+# newline='' keeps LF: on Windows the default text mode would rewrite every
+# newline as CRLF and the later patches touching this file would not apply.
+path.write_text(text, newline='')
 PY
 
 # Kernel builds use -nostdinc; HFS's kext-config.h needs the SDK's target macros.
-hfs_sdk=$(xcrun --sdk macosx --show-sdk-path)
-cp "$hfs_sdk/usr/include/TargetConditionals.h" bsd/sweet_hfs/
-echo "Staged hfs-627.100.6 ($hfs_sha) for SWEET"
+# macOS-only convenience: without xcrun (Linux/WSL/Windows checkouts) the SDK
+# header simply is not copied, which does not affect patch application.
+if command -v xcrun >/dev/null 2>&1; then
+    hfs_sdk=$(xcrun --sdk macosx --show-sdk-path)
+    cp "$hfs_sdk/usr/include/TargetConditionals.h" bsd/dipper_hfs/
+else
+    echo "note: xcrun not found, skipping TargetConditionals.h (macOS-only)" >&2
+fi
+echo "Staged hfs-627.100.6 ($hfs_sha) for DIPPER"

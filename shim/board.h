@@ -3,7 +3,7 @@
  * lives here, so a port is "add a block" instead of "grep for 0x17a00000 and
  * hope you found them all".
  *
- * Select with -DBOARD_dipper or -DBOARD_sweet; build.sh passes it.
+ * Select with -DBOARD_dipper; build.sh passes it.
  *
  * Sources are the vendor kernel trees (arch/arm64/boot/dts/qcom) and, where
  * marked "measured", what a flashed image actually did on the phone.
@@ -27,12 +27,12 @@
  *
  * BASE. sdm845.dtsi reserved-memory:
  *     cont_splash_memory: cont_splash_region@9d400000 { size 0x2400000 }
- * 0x9c000000 is the SDM670 / SM7150 address (what sweet uses). On dipper that
- * range sits between pil_spss_region (ends 0x98000000) and cont_splash_region:
- * plain free DRAM nobody scans out. Writes there never fault, they just never
- * reach the panel - which is exactly the "black screen, then fastboot"
- * symptom. Measured: a 200x200 green square at 0x9d400000 showed up on the
- * panel, so this base is right.
+ * 0x9c000000 is the SDM670 / SM7150 splash address, not this board. On dipper
+ * that range sits between pil_spss_region (ends 0x98000000) and
+ * cont_splash_region: plain free DRAM nobody scans out. Writes there never
+ * fault, they just never reach the panel - which is exactly the "black screen,
+ * then fastboot" symptom. Measured: a 200x200 green square at 0x9d400000
+ * showed up on the panel, so this base is right.
  *
  * STRIDE. The vendor kernel's mdss_mdp_fb_stride() (drivers/video/fbdev/msm/
  * mdss_mdp.c) returns ALIGN(xres, 32) * bpp for fb0 because Adreno wants a
@@ -89,8 +89,8 @@
 /*
  * MPIDR of CPU i, straight from the device tree: cpu@0..cpu@7 carry
  * reg = <0x00 0x000>, <0x00 0x100>, ... <0x00 0x700>, so the core index sits
- * in Aff1 and Aff0 is 0 for every core - the same one-core-per-Aff1 layout
- * sweet uses, *not* the 4+4 cluster map this file used to assume for SDM845.
+ * in Aff1 and Aff0 is 0 for every core - a one-core-per-Aff1 layout, *not*
+ * the 4+4 cluster map this file used to assume for SDM845.
  *
  * Measured (2026-10-23, first console boot): with ((i>>2)<<8)|(i&3) the
  * replies were 0x81000200 / 0x81000100 / 0x81000300 for contexts 2 / 5 / 7 -
@@ -101,8 +101,8 @@
 #define BOARD_CPU_ON_MPIDR(i)	(((uint64_t)(i)) << 8)
 
 /* sdm845.dtsi: qcom,msm-imem@146bf000, restart_reason@65c -> 0x146bf65c.
- * (0x146aa65c is the SM7150 imem window sweet uses; on dipper it lands outside
- * the node and the write is silently dropped.)
+ * (0x146aa65c is the SM7150 imem window; on dipper it lands outside the node
+ * and the write is silently dropped.)
  * PSHOLD: restart@10ac000, first reg = 0xc264000. */
 #define BOARD_IMEM_RESTART_REASON 0x146bf65cUL
 #define BOARD_PSHOLD		0x0c264000UL
@@ -121,47 +121,8 @@
  * bounces straight back into the bootloader and the screen never gets read. */
 #define BOARD_HOLD_ON_EXIT	1
 
-#elif defined(BOARD_sweet)
-
-/* --- Xiaomi Redmi Note 10 Pro, SM7150 (Kryo 470) --- */
-#define BOARD_NAME		"sweet"
-#define BOARD_SOC		"sm7150"
-
-#define BOARD_FB_BASE		0x9c000000UL	/* cont_splash_region */
-#define BOARD_FB_W		1080
-#define BOARD_FB_H		2400
-#define BOARD_FB_STRIDE		(1088 * 4)	/* ALIGN(1080,32) * 4 */
-#define BOARD_FB_BYTES		(BOARD_FB_H * BOARD_FB_STRIDE)
-
-/* sweet's debug UART was never wired up here; 0 disables the mirror. */
-#define BOARD_UART_BASE		0UL
-
-#define BOARD_GICD_BASE		0x17a00000UL
-#define BOARD_GICR_BASE		0x17a60000UL
-#define BOARD_GICR_SIZE		0x100000UL
-#define BOARD_GICR_PE_SIZE	0x20000UL
-
-#define BOARD_VTIMER_INTID	19	/* DT: <GIC_PPI 3 ...>, not the usual 27 */
-#define BOARD_PTIMER_INTID	18	/* DT: <GIC_PPI 2 ...> */
-
-#define BOARD_NR_CPUS		8
-#define BOARD_TIMEBASE_HZ	19200000UL
-
-/* sweet reports one core per Aff1 (0x000, 0x100, ... 0x700). */
-#define BOARD_CPU_ON_MPIDR(i)	(((uint64_t)(i)) << 8)
-
-#define BOARD_IMEM_RESTART_REASON 0x146aa65cUL
-#define BOARD_PSHOLD		0x0c264000UL
-
-#define BOARD_UFS_BASE		0x01d84000UL
-
-#define BOARD_BOOT_HEADER_VERSION 2
-
-/* sweet's ABL allows `fastboot boot`, so a self-reset is a cheap retry. */
-#define BOARD_HOLD_ON_EXIT	0
-
 #else
-#error "no board selected: pass -DBOARD_dipper or -DBOARD_sweet"
+#error "no board selected: pass -DBOARD_dipper"
 #endif
 
 #ifndef BOARD_FB_BYTES

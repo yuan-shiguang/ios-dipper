@@ -45,10 +45,7 @@ _head:
 # define FB_PITCH	1080		/* 1080 px * 4 B, no 32-pixel align */
 # define FB_ROWS	2248
 #else
-# define FB_BASE_HI	0x9c00		/* 0x9c000000: sweet's carve-out */
-# define FB_BASE_LO	0x0000
-# define FB_PITCH	1088
-# define FB_ROWS	2400
+# error "start.S knows no framebuffer for this board"
 #endif
 
 	.text

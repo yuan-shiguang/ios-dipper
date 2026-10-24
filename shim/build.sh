@@ -1,19 +1,18 @@
 #!/bin/bash
 # Build the shim and wrap it in an Android boot image for one board.
 #
-#   BOARD=sweet|dipper     board constants from board.h (default: sweet)
+#   BOARD=dipper           board constants from board.h (default: dipper)
 #   DTBS=path              dipper: the whole device tree collection from the
 #                          stock boot.img (65 trees, ~30 MB). ABL picks one by
 #                          qcom,board-id, so this is not optional.
-#   DTB=path               sweet (v2 dtb field) / dipper fallback single tree
-#   HEADER_VERSION=0|1|2   default: dipper 1, sweet 2
+#   DTB=path               fallback single tree
+#   HEADER_VERSION=0|1|2   default: dipper 1
 #   SHIM_UFS=0|1           UFS probe (default 1; 0 = minimal image)
 #   SHIM_GIC=0|1           GIC/timer probe (default 1)
 #
 # Examples:
-#   ./build.sh                                    # sweet, diagnostics
-#   BOARD=dipper ./build.sh                       # Mi 8, diagnostics
-#   BOARD=dipper ./build.sh ../out/payload.bin    # Mi 8, boot XNU
+#   ./build.sh                                    # dipper, diagnostics
+#   ./build.sh ../out/payload.bin                 # dipper, boot XNU
 #
 # dipper notes (measured against the stock boot.img in shim/out):
 #   * ABL rejects `fastboot boot` for every image, stock included. The shim is
@@ -32,7 +31,7 @@ cd "$(dirname "$0")"
 
 CC=aarch64-linux-gnu-gcc
 OBJCOPY=aarch64-linux-gnu-objcopy
-BOARD="${BOARD:-sweet}"
+BOARD="${BOARD:-dipper}"
 OUT="${OUT:-out}"
 
 case "$BOARD" in
@@ -50,12 +49,8 @@ dipper)
 	SHIM_UART="${SHIM_UART:-0}"
 	SHIM_SMP="${SHIM_SMP:-1}"
 	;;
-sweet)
-	DTB="${DTB:-../dtb/boot_unpacked/dtb}"
-	HEADER_VERSION="${HEADER_VERSION:-2}"
-	;;
 *)
-	echo "error: unknown BOARD=$BOARD (sweet|dipper)" >&2
+	echo "error: unknown BOARD=$BOARD (dipper)" >&2
 	exit 1
 	;;
 esac
@@ -152,9 +147,6 @@ if [ "${#OSVER[@]}" -gt 0 ]; then
 	MKBOOT+=("${OSVER[@]}")
 elif [ "$HEADER_VERSION" -ge 1 ]; then
 	MKBOOT+=(--os_version 17.0.0 --os_patch_level 2035-06)
-fi
-if [ "$BOARD" = "sweet" ]; then
-	MKBOOT+=(--cmdline "console=null")
 fi
 mkbootimg "${MKBOOT[@]}"
 

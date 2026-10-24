@@ -2,9 +2,9 @@
 # dxb runs patches/*.sh from the XNU source root before applying *.patch.
 set -euo pipefail
 
-[[ "${MACHINE_CONFIG:-}" == SWEET || "${MACHINE_CONFIG:-}" == DIPPER ]] || exit 0
+[[ "${MACHINE_CONFIG:-}" == DIPPER ]] || exit 0
 [[ "${MACOS_VERSION:-}" == 13.5 ]] || {
-    echo 'SWEET/DIPPER libpthread integration requires xnu-8796.141.3 (macOS 13.5)' >&2
+    echo 'dipper libpthread integration requires xnu-8796.141.3 (macOS 13.5)' >&2
     exit 1
 }
 [[ -f bsd/pthread/pthread_shims.c ]] || exit 1
@@ -14,7 +14,11 @@ set -euo pipefail
 pthread_sha=a6c70ca0e544347a0377babf748f831577ec24f9
 pthread_tmp=$(mktemp -d)
 trap 'rm -rf "$pthread_tmp"' EXIT
-git init -q "$pthread_tmp"
+# autocrlf=false: a Windows global config would rewrite the staged sources to
+# CRLF and every later patch that touches them would fail to apply.
+git -c core.autocrlf=false init -q "$pthread_tmp"
+# persist it: -c only covers the single command, the fetch/checkout below need it too
+git -C "$pthread_tmp" config core.autocrlf false
 git -C "$pthread_tmp" fetch -q --depth 1 \
     https://github.com/apple-oss-distributions/libpthread "$pthread_sha"
 git -C "$pthread_tmp" checkout -q FETCH_HEAD
@@ -26,7 +30,7 @@ import shutil
 import sys
 
 source = Path(sys.argv[1])
-target = Path('bsd/pthread/sweet_libpthread')
+target = Path('bsd/pthread/dipper_libpthread')
 if target.exists():
     raise SystemExit(f'refusing to overwrite existing provider: {target}')
 # Preserve upstream copyright/license headers; no downloaded sources in git.
@@ -38,7 +42,9 @@ def replace(file, old, new, count):
     text = path.read_text()
     if text.count(old) != count:
         raise SystemExit(f'libpthread source changed: {file}: {old!r}')
-    path.write_text(text.replace(old, new))
+    # newline='' keeps LF: on Windows the default text mode would rewrite every
+    # newline as CRLF and the later patches touching these files would not apply.
+    path.write_text(text.replace(old, new), newline='')
 
 # The public kernel source has stricter address types than the kext SDK.
 # Keep the address bits intact with explicit casts; user addresses use zero.
@@ -60,6 +66,12 @@ PY
 
 # Kernel builds use -nostdinc. Carry the real SDK target definitions beside
 # the provider so local compiles from the uploaded build tree work as well.
-pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
-cp "$pthread_sdk/usr/include/TargetConditionals.h" bsd/pthread/sweet_libpthread/
-echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
+# macOS-only convenience: without xcrun (Linux/WSL/Windows checkouts) the SDK
+# header simply is not copied, which does not affect patch application.
+if command -v xcrun >/dev/null 2>&1; then
+    pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
+    cp "$pthread_sdk/usr/include/TargetConditionals.h" bsd/pthread/dipper_libpthread/
+else
+    echo "note: xcrun not found, skipping TargetConditionals.h (macOS-only)" >&2
+fi
+echo "Staged libpthread-514.100.2 ($pthread_sha) for DIPPER"

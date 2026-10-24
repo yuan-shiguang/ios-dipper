@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Wrap tools/sweet-init.S into a static, ad-hoc signed arm64 Mach-O executable.
+"""Wrap tools/dipper-init.S into a static, ad-hoc signed arm64 Mach-O executable.
 
-  mkinit.py OBJECT OUT [ENTITLEMENTS.plist]   (OBJECT: clang -target arm64-apple-ios16.0 -c sweet-init.S)
+  mkinit.py OBJECT OUT [ENTITLEMENTS.plist]   (OBJECT: clang -target arm64-apple-ios16.0 -c dipper-init.S)
 
 No available linker produces static iOS executables on Linux, and the program
 is a single position-independent __text section, so the executable is laid
@@ -26,7 +26,7 @@ S_ATTR_CODE = 0x80000400		# PURE_INSTRUCTIONS | SOME_INSTRUCTIONS
 BASE, SEG = 0x100000000, 0x4000		# arm64 user segments are 16K aligned
 CODE_OFF = 0x400			# after the load commands
 CS_PAGE_SHIFT = 12
-IDENT = b'org.sweet.init\0'
+IDENT = b'org.dipper.init\0'
 
 
 def text_of(obj):

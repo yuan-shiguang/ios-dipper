@@ -1,0 +1,57 @@
+--- a/bsd/kern/dipper_amfi.c
++++ b/bsd/kern/dipper_amfi.c
+@@ -29,6 +29,7 @@
+ #include <mach/kern_return.h>
+ #include <sys/codesign.h>
+ #include <sys/mount.h>
++#include <sys/priv.h>
+ #include <sys/proc.h>
+ #include <sys/systm.h>
+ #include <sys/ubc_internal.h>
+@@ -308,8 +309,46 @@
+ 	.mpo_vnode_check_signature = dipper_amfi_vnode_check_signature,
+ };
+ 
++/*
++ * Privileges for non-root processes come from MAC policies (priv_check_cred
++ * -> mac_priv_grant); on iOS Sandbox/AMFI grant them. Without a grant UIKit
++ * apps die in CoreAnimation setup: work_interval_create(CA_CLIENT) needs
++ * PRIV_WORK_INTERVAL ("Failed to create work interval", SpringBoard).
++ * Grant that one; log the first denial of each other privilege per process.
++ */
++#define DIPPER_PRIV_LOG_MAX      64
++static struct {
++	int  priv;
++	char name[20];
++} dipper_priv_logged[DIPPER_PRIV_LOG_MAX];
++static int dipper_priv_logged_count;
++
++static int
++dipper_sandbox_priv_grant(kauth_cred_t cred __unused, int priv)
++{
++	if (priv == PRIV_WORK_INTERVAL) {
++		return 0;
++	}
++	char name[20];
++	proc_selfname(name, sizeof(name));
++	for (int i = 0; i < dipper_priv_logged_count; i++) {
++		if (dipper_priv_logged[i].priv == priv &&
++		    strncmp(dipper_priv_logged[i].name, name, sizeof(name)) == 0) {
++			return EPERM;
++		}
++	}
++	if (dipper_priv_logged_count < DIPPER_PRIV_LOG_MAX) {
++		dipper_priv_logged[dipper_priv_logged_count].priv = priv;
++		strlcpy(dipper_priv_logged[dipper_priv_logged_count].name, name, sizeof(name));
++		dipper_priv_logged_count++;
++		printf("DIPPER Sandbox: %s privilege %d denied\n", name, priv);
++	}
++	return EPERM;
++}
++
+ static const struct mac_policy_ops dipper_sandbox_mac_ops = {
+ 	.mpo_policy_syscall = dipper_sandbox_syscall,
++	.mpo_priv_grant = dipper_sandbox_priv_grant,
+ };
+ 
+ static struct mac_policy_conf dipper_sandbox_mac_conf = {

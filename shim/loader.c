@@ -67,7 +67,7 @@ static void zero64(uintptr_t dst, uint64_t n)
 
 static int magic_ok(const char *m)
 {
-	static const char want[] = "SWEETXNU";
+	static const char want[] = "DIPPERXNU";
 	for (int i = 0; i < 8; i++)
 		if (m[i] != want[i])
 			return 0;
@@ -87,7 +87,7 @@ const char *loader_boot(uintptr_t dtb)
 
 	const struct payload *p = (const struct payload *)rd_start;
 	if (!magic_ok(p->magic))
-		return "no SWEETXNU payload";
+		return "no DIPPERXNU payload";
 	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
 		return "bad payload header";
 
