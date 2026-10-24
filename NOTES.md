@@ -868,6 +868,106 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - QEMU next run: generate fresh `tools/mkadt.py research/q0020.adt --qemu` (timer27), mkpayload with `debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress`, then `tools/qemu-sweet.py PAYLOAD OUT --secs 45 --kernel KERNEL --fail-on-panic`. 12s can miss later panics because IORTC waits30s. Runner snapshot only: panic exit2, blank/incomplete exit3; absence of panic does not mean complete boot. Qualcomm XPU/ABL/panel and phone SMC PSCI require hardware checks.
 - Local checker `tools/xnu-cc.py research/run23.log research/bt23 FILTER --per-file`, XNU_CC_OBJDIR for objects. For new BearSSL TUs add XNU_CC_EXTRA with -I bt23/xnu/libkern/crypto/sweet_bearssl/{inc,src}. Patch checker `research/check-patch-order.py` uses temporary upstream index; source fixtures/artifacts ignored under research. GDB mask registers to unsigned64, use function-entry manual-call return traps, discard manipulated guests. No QEMU guest intentionally left running.
 
+## XNU: dipper machine config + CI baseline proven (2026-10-24)
+
+### The CI base tree is now reproduced exactly (this was the blocker)
+
+`xnu-8796.141.3` is the base for every patch in `xnu/patches/`, proven three independent ways:
+
+- distribution-macOS `macos-135` `release.json` lists xnu-8796.141.3, and blacktop's
+  `build.sh` derives the tag from it via `RELEASE_URL` for `MACOS_VERSION=13.5`
+  (our `xnu.yml` defaults to 13.5, copies `xnu/patches/*.patch` **and** `*.sh` into
+  `dxb/patches/`, so our patches and blacktop's share one alphabetical apply loop).
+- All three staging scripts assert it in their own guards
+  ("requires xnu-8796.141.3 (macOS 13.5)").
+- The full series now applies: **82/82** (0001-0081 sweet + 0082 dipper) on vanilla
+  xnu-8796.141.3 + blacktop's sed pre-processing + the three staging scripts.
+
+Local reproduction recipe (Git Bash is enough, no WSL needed):
+
+1. `git clone --filter=blob:none git@github.com:apple-oss-distributions/xnu.git`
+   **with `core.autocrlf=false` set before the first checkout** (see the CRLF trap).
+2. blacktop's seds - only two change anything on this tag: the `LDFLAGS_KERNEL_SDK`
+   and `INCFLAGS_SDK` lines in `makedefs/MakeInc.def`. (Vanilla line 644 is a
+   commented-out `# LDFLAGS_KERNEL_SDK`, so the sed hits line 645 instead.)
+3. Run `xnu/patches/00*-stage-*.sh` from the xnu source root: they fetch
+   libpthread-514.100.2, BearSSL and hfs-627.100.6 at pinned SHAs. **0026 is what
+   creates `bsd/sweet_hfs/core/`**, which 0031/0041 patch - skip it and those two
+   look like broken patches ("No such file or directory") when they are not.
+4. `git apply` the patches in filename order.
+
+**CRLF trap (cost hours, local-only).** Git for Windows defaults to
+`core.autocrlf=true`. The first checkout writes CRLF; after flipping the config to
+false, `git checkout -f` / `reset --hard` will *not* rewrite files whose blob equals
+the index entry (the stat cache says "clean"), so they stay CRLF forever and every
+LF hunk touching them fails with a misleading `patch failed: <file>:<line>` even
+though the context is visibly present. Symptom: 6 of 81 patches failed, and the
+failing files were exactly those whose blobs are identical across
+xnu-8796.101.5/121.2/141.3 (therefore never rewritten), while `sleh.c` - which
+differs between tags and so got rewritten - applied fine. `git apply -v` printing
+"while searching for:" the exact text that is plainly in the file is the tell.
+Fix: `git ls-files -z | xargs -0 sed -i 's/\r$//'` then re-checkout. CI is
+unaffected: the patch blobs are LF in git (`i/lf`); only this Windows worktree was
+CRLF (`w/crlf`). Same trap hit the HFS staging checkout - strip CR there too.
+
+### 0082-dipper-machine-config.patch (new)
+
+Adds the DIPPER machine config so the sweet kernel can be built for dipper:
+
+- `pexpert/pexpert/arm64/DIPPER.h` (new, 51 lines): `#define DIPPER 1` plus the
+  measured hardware facts - flat MPIDR (Aff1 = core, Aff0 = 0), `GICD_CTLR.DS = 0`,
+  `GICR_TYPER.PLPIS=1 VLPIS=0`, `CNTFRQ_EL0 = 19.2 MHz`.
+- `board_config.h`: includes DIPPER.h inside the existing SWEET block.
+- `makedefs/MakeInc.def`: DIPPER added to `SUPPORTED_ARM64_MACHINE_CONFIGS`, new
+  `MACHINE_FLAGS_ARM64_DIPPER = -DARM64_BOARD_CONFIG_DIPPER -DARM64_BOARD_CONFIG_SWEET
+  -march=armv8.2-a+crypto`, and DIPPER joins SWEET in the "stay plain arm64" (no
+  PAC) filter.
+- `pexpert/pexpert/arm64/Makefile`: DIPPER.h in the private header list.
+
+**Why DIPPER defines `ARM64_BOARD_CONFIG_SWEET`:** 21 source files gate the
+Qualcomm/GICv3/timer code behind `defined(SWEET)`, and `bsd/dev/{mem,sweet_keys,
+sweet_rpmh}.c` gate on `ARM64_BOARD_CONFIG_SWEET`. dipper needs every one of those
+paths (same GICv3 with TrustZone owning Group 0, same INTID 19 virtual timer, same
+PSCI CPU_ON, same 16K pages), so instead of forking 81 patches the DIPPER build
+defines the sweet macros and DIPPER.h carries only the deltas. Split them apart
+once dipper boots. Board-specific numbers (FB geometry, DRAM, UFS, GIC bases) are
+not compiled in at all - they arrive in the ADT.
+
+Build: dispatch `xnu.yml` with `machine_config=DIPPER`. The three staging scripts
+now accept `SWEET` or `DIPPER`; they previously `exit 0`'d for anything else, which
+would have left a DIPPER build without the staged libpthread/BearSSL/HFS sources.
+
+### ADT: real D22AP device tree, plus a node-naming bug fixed
+
+- `tools/remotezip.py` byte-range fetched `Firmware/all_flash/DeviceTree.d22ap.im4p`
+  (33,719 B, CRC-32 ok) from Apple's CDN. 20H392 = **iOS 16.7.16** for iPhone10,3
+  (URL from `api.ipsw.me/v4/device/iPhone10,3`); the three DMGs the user had are
+  from that same IPSW. No need to mount the APFS images.
+- `tools/adt.py` now decompresses `bvx2` (LZFSE) payloads via the `lzfse` Python
+  module (`pip install lzfse`), falling back to the reference CLI only if the
+  module is missing - device trees are LZFSE-compressed, so `adt.py unwrap` could
+  not run on a machine with neither. Unwrapped:
+  `research/ipsw-x/d22ap.adt` (186,084 B), a genuine D22AP tree
+  (`compatible = 'D22AP|iPhone10,3|AppleARM'`, time-stamp 2026-01-04).
+- **`tools/mkadt_dipper.py` had the three platform-private nodes misnamed**
+  (`dipper-fbcon` / `dipper-ufs` / `dipper,display`). The drivers bind by name:
+  `pexpert/arm/pe_serial.c:821` `SecureDTFindEntry("name", "sweet-fbcon")`,
+  `bsd/dev/sweet_ufs.c:595` `SecureDTLookupEntry(NULL, "/sweet-ufs")`, and
+  `iokit/KernelConfigTables.cpp:68` IONameMatch `'sweet,display'`. Renamed to match,
+  otherwise the kernel would never find the framebuffer (silent black console) or
+  the UFS controller. Generated `research/ipsw-x/dipper.adt` (12,776 B) with the
+  real `/product` node (`product-name = 'iPhone X'`, `artwork-scale-factor = 0x3`,
+  `device-perf-memory-class = 0x4`, `compatible-device-fallback = 'iPhone9,2'`).
+
+### Next
+
+1. CI: dispatch `xnu.yml` with `machine_config=DIPPER`; it should build, since the
+   whole sweet series compiles with SWEET still defined.
+2. Boot it with the shim - the loader must hand over `dipper.adt`, not the sweet one.
+3. First divergence to expect: the drivers read everything from the ADT, so panel
+   geometry (1080x2248) and the GIC/UFS bases should just work; the likely first
+   real failure is UFS on hardware (shim milestone 5).
+
 ## Session log and earlier handoffs (superseded by the active summary above)
 
 ### Prior 0019 transition notes (superseded)

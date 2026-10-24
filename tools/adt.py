@@ -22,6 +22,21 @@ def der(buf, off):
     return tag, off, off + ln
 
 
+def lzfse_decompress(payload):
+    """Decompress a bvx2 (LZFSE) IM4P payload.
+
+    Prefers the `lzfse` Python module (`pip install lzfse`); falls back to the
+    reference CLI when the module is not importable. DeviceTree.*.im4p from
+    Apple's IPSWs is LZFSE-compressed, so without this `adt.py unwrap` cannot
+    run on a machine that has neither."""
+    try:
+        import lzfse
+    except ImportError:
+        return subprocess.run(['lzfse', '-decode'], input=payload,
+                              capture_output=True, check=True).stdout
+    return lzfse.decompress(payload)
+
+
 def im4p_payload(buf):
     tag, s, e = der(buf, 0)
     assert tag == 0x30, 'not a DER sequence'
@@ -36,8 +51,7 @@ def im4p_payload(buf):
             'encrypted': any(t == 0x04 for t, _ in items[4:])}
     payload = items[3][1]
     if payload[:4] == b'bvx2':
-        payload = subprocess.run(['lzfse', '-decode'], input=payload,
-                                 capture_output=True, check=True).stdout
+        payload = lzfse_decompress(payload)
     return payload, info
 
 

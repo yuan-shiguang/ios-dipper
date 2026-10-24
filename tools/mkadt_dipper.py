@@ -34,8 +34,11 @@ SOC_BASE = 0x01000000          # /arm-io 子节点地址相对基准；不能为
 
 GICD, GICD_SIZE = 0x17A00000, 0x10000      # SDM845 GICD（与 SM7150 同段）
 GICR, GICR_SIZE = 0x17A60000, 0x100000     # SDM845 GICR
-TIMEBASE = 19200000                        # 19.2 MHz
-VTIMER_INTID = 19                          # ⚠️ 与 sweet 同值，需在 dipper 上实测
+GICR_PE_SIZE = 0x20000                     # ✅ 实测：GICR_TYPER.PLPIS=1 VLPIS=0
+                                           #   -> 128 KB 重分发器粒度，两个 64 KB 帧
+TIMEBASE = 19200000                        # ✅ 实测 CNTFRQ_EL0
+VTIMER_INTID = 19                          # ✅ 实测 ICC_IAR1_EL1 返回 19
+PTIMER_INTID = 18                          # DT: <GIC_PPI 2 ...>
 
 UFS, UFS_SIZE = 0x01D84000, 0x3000         # ufshc@1d84000，SDM845 与 SM7150 同址
 
@@ -51,26 +54,37 @@ PANIC_LOG_SIZE = 0x100000                  # 1 MiB，从 dram 顶部切出来给
 FB_W, FB_H = 1080, 2248
 FB_STRIDE = FB_W * 4
 CANVAS_W, CANVAS_H = 1125, 2436
-FB_BASE_DEFAULT = 0x9C000000               # ⚠️ ABL 留下的 splash framebuffer，必须实测
-FB_SIZE = 0x1700000
+FB_BASE_DEFAULT = 0x9D400000               # ✅ 实测：ABL 留下的 splash framebuffer，
+                                           #   shim 在上面画了整屏控制台并被人眼确认
+FB_SIZE = 0x2400000                        # ✅ 实测：board.h BOARD_FB_BYTES，整个 carve-out
+                                           #   0x9d400000 + 0x2400000 = 0x9f800000
 
 DIPPER_ECID = 0x4449505045520001           # 'DIPPER' + 1，合成值，不是真机 ECID
 IPHONE_X_CHIP_ID = 0x8015                  # A11，因为跑的是 iPhone X 用户态
 BOOT_MANIFEST_HASH = hashlib.sha384(b'dipper boot manifest').digest()
 
-# CPU 拓扑：SDM845 = 4x A55 (cluster0) + 4x A75 (cluster1)
-# MPIDR 编码 reg = (Aff1 << 8) | Aff0，标准布局。⚠️ 必须用 shim 打印的 MPIDR 核对，
-# Qualcomm 在部分平台把核号放在 Aff1（sweet 就是这样），dipper 大概率是标准布局。
+# CPU 拓扑：SDM845 = 4x A55 派生 (Silver) + 4x A75 派生 (Gold)。
+#
+# ✅ 实测 MPIDR 布局（2026-10-23，shim PSCI CPU_ON 往返）：
+#     引导核 mpidr = 0x81000000，七个次核 mpidr = 0x8100nn00 (n = 1..7)
+#   即 **Aff1 = 核号，Aff0 恒为 0**，扁平编号，没有集群层。
+#   这不是推测：board.h 里先用 ((i>>2)<<8)|(i&3)（标准 4+4 集群图）试过，
+#   次核回来的是 0x81000200/0x81000100/0x81000300（上下文 2/5/7 对应 cpu2/cpu1/cpu3），
+#   cpu4..7 始终起不来，三个上下文返回 -5 (ON_PENDING)。改成 DT 原值 i<<8 后
+#   七个次核全部 ret=0。Qualcomm 把核号放在 Aff1，和 sweet 一样。
+#
+# 所以 reg 必须是 core<<8。之前这里写的是 (cluster<<8)|(core&0xF)，正好是
+# 被实测否定的那张表，会让 XNU 的 ml_parse_cpu_topology 一个 CPU 都匹配不上。
 CPU_LAYOUT = [
-    # (core, cluster, cluster_name, clock_hz, compatible)
-    (0, 0, 'a55', 1766400000),
-    (1, 0, 'a55', 1766400000),
-    (2, 0, 'a55', 1766400000),
-    (3, 0, 'a55', 1766400000),
-    (4, 1, 'a75', 2803200000),
-    (5, 1, 'a75', 2803200000),
-    (6, 1, 'a75', 2803200000),
-    (7, 1, 'a75', 2803200000),
+    # (core, clock_hz)
+    (0, 1766400000),   # Kryo 385 Silver，A55 派生
+    (1, 1766400000),
+    (2, 1766400000),
+    (3, 1766400000),
+    (4, 2803200000),   # Kryo 385 Gold，A75 派生
+    (5, 2803200000),
+    (6, 2803200000),
+    (7, 2803200000),
 ]
 
 u32 = lambda *v: struct.pack('<%dI' % len(v), *v)
@@ -147,18 +161,21 @@ def build(args):
     ])
 
     # ---------------- /cpus ----------------
+    # 与 sweet 一致：reg 是真实 MPIDR 的 Aff1:Aff0，不是逻辑核号；
+    # cluster-* 只是描述性的，XNU 按 DT 顺序分配逻辑 ID（见 ml_parse_cpu_topology）。
+    # 八个核一个同构 SMP 集群（cluster-type 0），大小核差异只体现在 clock-frequency。
     cpu_nodes = []
-    for core, cluster, cname, clock in CPU_LAYOUT:
+    for core, clock in CPU_LAYOUT:
         cpu_nodes.append(node('cpu%d' % core, [
             ph(),
             ('device_type', cstr('cpu')),
             ('compatible', cstr('qcom,kryo385') + cstr('ARM,v8')),
-            ('reg', u32((cluster << 8) | (core & 0xF))),   # MPIDR Aff1:Aff0
+            ('reg', u32(core << 8)),                 # 实测 MPIDR Aff1:Aff0
             ('cpu-id', u32(core)),
-            ('cluster-id', u32(cluster)),
-            ('cluster-type', u32(0)),                      # 同构 SMP
+            ('cluster-id', u32(0)),                  # 同构 SMP
+            ('cluster-type', u32(0)),                # CLUSTER_TYPE_SMP，不是 AMP
             ('die-cluster-id', u32(0)),
-            ('cluster-core-id', u32(core & 0x3)),
+            ('cluster-core-id', u32(core)),
             ('l2-cache-id', u32(core)),
             ('l3-cache-id', u32(0)),
             ('state', cstr('running' if core == 0 else 'stopped')),
@@ -195,14 +212,19 @@ def build(args):
         node('disp0', [
             ph(),
             ('device_type', cstr('display-subsystem')),
-            ('compatible', cstr('dipper,display')),
+            # iokit/KernelConfigTables.cpp 里 IOMobileFramebuffer 的
+            # IONameMatch 写死 'sweet,display'，画布尺寸靠这个节点传递
+            ('compatible', cstr('sweet,display')),
             ('canvas-width', u32(CANVAS_W)),
             ('canvas-height', u32(CANVAS_H)),
         ]),
     ])
 
     # ---------------- 平台私有节点 ----------------
-    fbcon = node('dipper-fbcon', [
+    # 节点名必须与 sweet 版一致：pexpert/arm/pe_serial.c 用
+    # SecureDTFindEntry("name", "sweet-fbcon") 找它，改名内核就看不见
+    # framebuffer，控制台直接黑屏。
+    fbcon = node('sweet-fbcon', [
         ph(),
         ('reg', u64(args.fb, FB_SIZE)),
         ('width', u32(FB_W)),
@@ -210,7 +232,9 @@ def build(args):
         ('stride', u32(FB_STRIDE)),
     ])
 
-    ufs = node('dipper-ufs', [
+    # bsd/dev/sweet_ufs.c 用 SecureDTLookupEntry(NULL, "/sweet-ufs") 绑定，
+    # 且只读 reg 一个属性
+    ufs = node('sweet-ufs', [
         ph(),
         ('compatible', cstr('qcom,ufshc')),
         ('reg', u64(UFS, UFS_SIZE)),

@@ -3,9 +3,9 @@
 # dxb runs patches/*.sh from the XNU source root before applying *.patch.
 set -euo pipefail
 
-[[ "${MACHINE_CONFIG:-}" == SWEET ]] || exit 0
+[[ "${MACHINE_CONFIG:-}" == SWEET || "${MACHINE_CONFIG:-}" == DIPPER ]] || exit 0
 [[ "${MACOS_VERSION:-}" == 13.5 ]] || {
-    echo 'SWEET HFS integration requires xnu-8796.141.3 (macOS 13.5)' >&2
+    echo 'SWEET/DIPPER HFS integration requires xnu-8796.141.3 (macOS 13.5)' >&2
     exit 1
 }
 [[ -f bsd/kern/bsd_init.c ]] || exit 1
