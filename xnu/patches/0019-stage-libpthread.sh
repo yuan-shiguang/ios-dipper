@@ -42,9 +42,12 @@ def replace(file, old, new, count):
     text = path.read_text()
     if text.count(old) != count:
         raise SystemExit(f'libpthread source changed: {file}: {old!r}')
-    # newline='' keeps LF: on Windows the default text mode would rewrite every
-    # newline as CRLF and the later patches touching these files would not apply.
-    path.write_text(text.replace(old, new), newline='')
+    # newline='' (via open) keeps LF: on Windows the default text mode would
+    # rewrite every newline as CRLF and the later patches touching these files
+    # would not apply. open(..., newline='') works on every Python >=3.7, unlike
+    # Path.write_text(newline=...) which needs Python 3.10+ (breaks on the
+    # macOS 14 runner's system python3 3.9).
+    open(path, 'w', newline='').write(text.replace(old, new))
 
 # The public kernel source has stricter address types than the kext SDK.
 # Keep the address bits intact with explicit casts; user addresses use zero.

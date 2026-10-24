@@ -50,9 +50,9 @@ if text.count(include) != 1 or text.count(first) != 1 or text.count(end) != 1:
 text = text.replace(include, '#if CONFIG_PROTECT\n' + include + '#endif\n')
 i, j = text.index(first), text.index(end)
 text = text[:i] + '#if CONFIG_PROTECT\n' + text[i:j].rstrip('\n') + '\n#endif\n\n' + text[j:]
-# newline='' keeps LF: on Windows the default text mode would rewrite every
-# newline as CRLF and the later patches touching this file would not apply.
-path.write_text(text, newline='')
+# open(..., newline='') keeps LF on every Python >=3.7 (Path.write_text's
+# newline= keyword needs 3.10+, which the macOS 14 runner's python3 3.9 lacks).
+open(path, 'w', newline='').write(text)
 PY
 
 # Kernel builds use -nostdinc; HFS's kext-config.h needs the SDK's target macros.

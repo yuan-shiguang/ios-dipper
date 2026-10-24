@@ -29,14 +29,14 @@ shutil.copytree(source / 'inc', target / 'inc')
 for file in ('inner.h', 'config.h'):
     shutil.copy2(source / 'src' / file, target / 'src' / file)
 # XNU exports machine/limits.h instead of the userspace limits.h.
-# newline='' keeps LF: on Windows the default text mode would rewrite every
-# newline as CRLF and the later patches touching this file would not apply.
+# open(..., newline='') keeps LF on every Python >=3.7 (Path.write_text's
+# newline= keyword needs 3.10+, which the macOS 14 runner's python3 3.9 lacks).
 header = target / 'src/inner.h'
 text = header.read_text()
 assert text.count('#include <limits.h>') == 1
-header.write_text(text.replace('#include <limits.h>',
+open(header, 'w', newline='').write(text.replace('#include <limits.h>',
     '#if defined(KERNEL)\n#include <machine/limits.h>\n'
-    '#else\n#include <limits.h>\n#endif'), newline='')
+    '#else\n#include <limits.h>\n#endif'))
 for name in ('aes_ct', 'aes_ct_enc', 'aes_ct_dec', 'aes_ct_cbcenc', 'aes_ct_cbcdec'):
     shutil.copy2(source / 'src/symcipher' / (name + '.c'),
                  target / 'src/symcipher' / (name + '.c'))
