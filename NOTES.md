@@ -959,13 +959,82 @@ would have left a DIPPER build without the staged libpthread/BearSSL/HFS sources
   real `/product` node (`product-name = 'iPhone X'`, `artwork-scale-factor = 0x3`,
   `device-perf-memory-class = 0x4`, `compatible-device-fallback = 'iPhone9,2'`).
 
+### CI run 1 failed: 0082 inverted the arm64e guard (fixed in da47b12)
+
+The push of `b1e4a45` triggered the first CI run of the sweet series
+(`40057762944`) and it failed. All 82 patches applied; the failure was 42
+compile errors in five files, every one a PAC symbol
+(`MANIPULATE_SIGNED_THREAD_STATE`, `pmap_sign_user_ptr`,
+`pmap_auth_user_ptr`, `ml_default_jop_pid`, `jop_pid`, `disable_jop`,
+`ARM_MACHINE_THREAD_DISABLE_USER_JOP`, plus a `__ptrauth` mismatch on
+`kauth_cred_t`):
+
+| file | errors |
+|---|---|
+| `osfmk/arm64/status.c` | 35 |
+| `osfmk/vm/vm_shared_region.c` | 3 |
+| `osfmk/vm/vm_shared_region_pager.c` | 2 |
+| `osfmk/arm/pmap/pmap.c` | 1 |
+| `bsd/vfs/vfs_cache.c` | 1 |
+
+Each of those symbols is defined only under `#if defined(HAS_APPLE_PAC)`
+(`thread_status.h`, `machine_routines.h`, `machine_machdep.h`, `pmap.h`), and
+**`HAS_APPLE_PAC` is never defined anywhere in the open-source tree** - Apple
+injects it from outside. The call sites that use them are guarded by
+`#if __has_feature(ptrauth_calls)`, so the only way to reach them is to compile
+with pointer authentication on. The compile line in the log says `-arch arm64e`.
+
+That was my own 0082. `0004` had the guard right; extending it to DIPPER I
+replaced the `ifneq` with a `filter` and flipped its sense:
+
+```make
+# 0004, correct - upgrade unless sweet
+ifneq ($(CURRENT_MACHINE_CONFIG),SWEET)
+# 0082 as pushed, wrong - upgrade if sweet/dipper
+ifneq ($(filter SWEET DIPPER,$(CURRENT_MACHINE_CONFIG)),)
+export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
+```
+
+so SWEET and DIPPER were the only two configs being upgraded to arm64e.
+`da47b12` restores the sense with the filter:
+
+```make
+ifeq ($(filter SWEET DIPPER,$(CURRENT_MACHINE_CONFIG)),)   # upgrade unless sweet/dipper
+export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
+```
+
+Verified with GNU make: `SWEET -> arm64`, `DIPPER -> arm64`,
+`VMAPPLE -> arm64e`, `BCM2837 -> arm64e` (vanilla behaviour untouched), and the
+whole CI reproduction re-run on the full tree - vanilla `xnu-8796.141.3` +
+build.sh's six seds + the three staging scripts - still gives 82/82.
+
+Neither SoC has PAC hardware (sweet A76/A55, dipper A75/A55), so arm64e was
+never a viable target; with plain arm64 every one of the 42 errors takes its
+non-PAC branch and disappears.
+
+**Tooling note, cost us an hour:** the CI job log is only reachable through a
+SAS URL that expires ~10 minutes after the run, and `gh` is not installed here,
+so a failure cannot be re-fetched later. Save the log (`5_Build.txt`, 27 MB /
+124,285 lines) to disk the moment a run fails. It now lives at
+`D:\xnu-build\ci-logs\`, outside the repo. Also note `MAKEFLAGS=-k` means the
+log holds *every* compile error, so the first `error:` line is the one to fix -
+`grep -n "error:"` then filter out the four `Skipping patch ... already exists`
+warnings that blacktop's own version-mismatched patches always produce.
+
+Reproduction environment (kept out of `/tmp`, which gets cleaned):
+`D:\xnu-build\{dxb,xnu-src,hfs-src,patches-lf}`. The staging scripts need
+`MACHINE_CONFIG=SWEET MACOS_VERSION=13.5` in the environment, exactly as the
+workflow sets them; without them they exit 0 silently and nothing gets staged.
+
 ### Next (exact commands, in order)
 
 1. **CI kernel.** `gh` is not installed in this environment, so dispatch by hand:
    Actions -> `xnu` -> Run workflow -> `machine_config: DIPPER` (leave the rest at
-   their defaults: macOS 13.5, DEVELOPMENT). It should build - the whole sweet
-   series compiles with SWEET still defined, and nothing in the tree references
-   DIPPER except the new wiring.
+   their defaults: macOS 13.5, DEVELOPMENT). The push of `da47b12` already
+   re-runs the default SWEET build, which is the cheaper test: it proves the
+   42 PAC errors are gone before spending a run on DIPPER. Nothing in the tree
+   references DIPPER except the new wiring, so DIPPER should behave like SWEET
+   plus the `DIPPER.h` deltas.
 2. **Payload + boot image**, once `kernel.development` is downloaded from the
    `xnu-kernel` artifact:
    ```
