@@ -959,6 +959,25 @@ would have left a DIPPER build without the staged libpthread/BearSSL/HFS sources
   real `/product` node (`product-name = 'iPhone X'`, `artwork-scale-factor = 0x3`,
   `device-perf-memory-class = 0x4`, `compatible-device-fallback = 'iPhone9,2'`).
 
+### CI run 2 green: sweet kernel builds (da47b12, run 40062220121)
+
+`da47b12` re-ran the default SWEET build and **every step passed**, Build
+included. The `xnu-kernel` artifact went from 178,298 B (an empty
+`SHA256SUMS` - the build had produced nothing) to **59,993,917 B**, so the
+guard fix is what unblocked it and the whole sweet series really does compile.
+That run is the baseline for DIPPER: the only difference is `DIPPER.h` plus the
+`-DARM64_BOARD_CONFIG_DIPPER` flag.
+
+Still unproven, in the order it will bite:
+
+- **DIPPER config itself** - not yet exercised. Dispatch it by hand:
+  Actions -> `xnu` -> Run workflow -> `machine_config: DIPPER`.
+- **`libfirehose_kernel` at link time.** build.sh adds
+  `-lfirehose_kernel` to `LDFLAGS_KERNEL_SDK`, and the workflow's own comment
+  says that library is built arm64e-only while the sweet kernel is plain arm64.
+  It linked this time, so either the fakeroot copy is fat or nothing references
+  it - worth knowing before a DIPPER run surprises us.
+
 ### CI run 1 failed: 0082 inverted the arm64e guard (fixed in da47b12)
 
 The push of `b1e4a45` triggered the first CI run of the sweet series
